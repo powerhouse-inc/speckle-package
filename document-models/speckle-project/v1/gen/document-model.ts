@@ -1,0 +1,231 @@
+import type { DocumentModelGlobalState } from "document-model";
+
+export const documentModel: DocumentModelGlobalState = {
+  id: "speckle/project",
+  name: "Speckle Project",
+  author: {
+    name: "Powerhouse",
+    website: "https://www.powerhouse.inc/",
+  },
+  extension: "sprj",
+  description:
+    "A Powerhouse mirror of one Speckle project. Holds its models, every observed revision pinned by its immutable referencedObject hash, the masses read straight off the object graph per Speckle type, and an element-level change log between consecutive revisions. Every write is an upsert keyed on the Speckle id, so re-syncing is idempotent and the operation history stays a truthful record of when each fact arrived.",
+  specifications: [
+    {
+      state: {
+        local: {
+          schema: "",
+          examples: [],
+          initialValue: "",
+        },
+        global: {
+          schema:
+            'type SpeckleProjectState {\n    serverUrl: URL\n    projectId: String\n    name: String\n    description: String\n    visibility: String\n    syncedAt: DateTime\n    models: [SpeckleModel!]!\n    revisions: [Revision!]!\n    changes: [ChangeEntry!]!\n}\n\ntype SpeckleModel {\n    id: OID!\n    speckleModelId: String!\n    name: String!\n    displayName: String\n    updatedAt: DateTime\n    latestVersionId: String\n    versionCount: Int!\n}\n\ntype Revision {\n    id: OID!\n    speckleModelId: String!\n    modelName: String\n    versionId: String!\n    referencedObject: String!\n    message: String\n    sourceApplication: String\n    authorName: String\n    createdAt: DateTime\n    previewUrl: URL\n    objectCount: Int!\n    truncated: Boolean!\n    categories: [CategoryTotal!]!\n    syncedAt: DateTime!\n}\n\ntype CategoryTotal {\n    id: OID!\n    speckleType: String!\n    objectCount: Int!\n    unit: String\n    volume: Float\n    area: Float\n    length: Float\n}\n\ntype ChangeEntry {\n    id: OID!\n    speckleModelId: String!\n    fromVersionId: String\n    toVersionId: String!\n    detectedAt: DateTime!\n    addedCount: Int!\n    removedCount: Int!\n    modifiedCount: Int!\n    touchedElements: [TouchedElement!]!\n    deltas: [CategoryDelta!]!\n}\n\n"""\nOne element a revision touched, carrying the identity that survives edits.\n\nA Speckle object id is a content hash, so it changes whenever the element does.\n`identity` is the authoring tool\'s own element id where it has one, which is what\nmakes it possible to say that the same wall was modified in four revisions.\n"""\ntype TouchedElement {\n    id: OID!\n    identity: String!\n    objectId: String!\n    speckleType: String!\n    kind: ChangeKind!\n}\n\nenum ChangeKind {\n    ADDED\n    MODIFIED\n    REMOVED\n}\n\ntype CategoryDelta {\n    id: OID!\n    speckleType: String!\n    unit: String\n    countBefore: Int!\n    countAfter: Int!\n    volumeBefore: Float\n    volumeAfter: Float\n    areaBefore: Float\n    areaAfter: Float\n}',
+          examples: [],
+          initialValue:
+            '{\n    "serverUrl": null,\n    "projectId": null,\n    "name": null,\n    "description": null,\n    "visibility": null,\n    "syncedAt": null,\n    "models": [],\n    "revisions": [],\n    "changes": []\n}',
+        },
+      },
+      modules: [
+        {
+          id: "mod-identity",
+          name: "identity",
+          description:
+            "Which Speckle project this mirrors, and resetting the mirror",
+          operations: [
+            {
+              id: "op-set-project-identity",
+              name: "SET_PROJECT_IDENTITY",
+              description:
+                "Records which Speckle project this document mirrors",
+              schema:
+                "input SetProjectIdentityInput {\n    serverUrl: URL!\n    projectId: String!\n    name: String\n    description: String\n    visibility: String\n    syncedAt: DateTime!\n}",
+              template: "Records which Speckle project this document mirrors",
+              reducer:
+                'if (!action.input.projectId.trim()) {\n    throw new MissingProjectIdentityError("A Speckle project id is required");\n}\n\nstate.serverUrl = action.input.serverUrl;\nstate.projectId = action.input.projectId;\nstate.name = action.input.name || null;\nstate.description = action.input.description || null;\nstate.visibility = action.input.visibility || null;\nstate.syncedAt = action.input.syncedAt;',
+              errors: [
+                {
+                  id: "err-missing-project-identity",
+                  name: "MissingProjectIdentityError",
+                  code: "MISSING_PROJECT_IDENTITY",
+                  description:
+                    "The Speckle project id was blank or whitespace only",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-clear-synced-data",
+              name: "CLEAR_SYNCED_DATA",
+              description:
+                "Empties the mirror so the next sync rebuilds it from scratch",
+              schema: "input ClearSyncedDataInput {\n    _: Boolean\n}",
+              template:
+                "Empties the mirror so the next sync rebuilds it from scratch",
+              reducer:
+                "state.models = [];\nstate.revisions = [];\nstate.changes = [];\nstate.syncedAt = null;",
+              errors: [],
+              examples: [],
+              scope: "global",
+            },
+          ],
+        },
+        {
+          id: "mod-models",
+          name: "models",
+          description: "The project's Speckle models",
+          operations: [
+            {
+              id: "op-upsert-model",
+              name: "UPSERT_MODEL",
+              description:
+                "Adds or updates one Speckle model, keyed on its Speckle id",
+              schema:
+                "input UpsertModelInput {\n    id: OID!\n    speckleModelId: String!\n    name: String!\n    displayName: String\n    updatedAt: DateTime\n    latestVersionId: String\n    versionCount: Int!\n}",
+              template:
+                "Adds or updates one Speckle model, keyed on its Speckle id",
+              reducer:
+                'if (!action.input.speckleModelId.trim()) {\n    throw new InvalidModelIdError("A Speckle model id is required");\n}\n\nconst existing = state.models.find((m) => m.speckleModelId === action.input.speckleModelId);\n\nif (existing) {\n    existing.name = action.input.name;\n    existing.displayName = action.input.displayName || null;\n    existing.updatedAt = action.input.updatedAt || null;\n    existing.latestVersionId = action.input.latestVersionId || null;\n    existing.versionCount = action.input.versionCount;\n    return;\n}\n\nstate.models.push({\n    id: action.input.id,\n    speckleModelId: action.input.speckleModelId,\n    name: action.input.name,\n    displayName: action.input.displayName || null,\n    updatedAt: action.input.updatedAt || null,\n    latestVersionId: action.input.latestVersionId || null,\n    versionCount: action.input.versionCount,\n});',
+              errors: [
+                {
+                  id: "err-invalid-model-id",
+                  name: "InvalidModelIdError",
+                  code: "INVALID_MODEL_ID",
+                  description:
+                    "The Speckle model id was blank or whitespace only",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-remove-model",
+              name: "REMOVE_MODEL",
+              description: "Removes a model and everything mirrored from it",
+              schema:
+                "input RemoveModelInput {\n    speckleModelId: String!\n}",
+              template: "Removes a model and everything mirrored from it",
+              reducer:
+                "const index = state.models.findIndex((m) => m.speckleModelId === action.input.speckleModelId);\n\nif (index === -1) {\n    throw new ModelNotFoundError(`Model ${action.input.speckleModelId} is not mirrored here`);\n}\n\nstate.models.splice(index, 1);\nstate.revisions = state.revisions.filter((r) => r.speckleModelId !== action.input.speckleModelId);\nstate.changes = state.changes.filter((c) => c.speckleModelId !== action.input.speckleModelId);",
+              errors: [
+                {
+                  id: "err-model-not-found",
+                  name: "ModelNotFoundError",
+                  code: "MODEL_NOT_FOUND",
+                  description: "No model with that Speckle id is mirrored here",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+          ],
+        },
+        {
+          id: "mod-revisions",
+          name: "revisions",
+          description:
+            "Observed versions with the masses read off their object graph",
+          operations: [
+            {
+              id: "op-upsert-revision",
+              name: "UPSERT_REVISION",
+              description:
+                "Adds or refreshes one revision together with the masses read off its object graph",
+              schema:
+                "input UpsertRevisionInput {\n    id: OID!\n    speckleModelId: String!\n    modelName: String\n    versionId: String!\n    referencedObject: String!\n    message: String\n    sourceApplication: String\n    authorName: String\n    createdAt: DateTime\n    previewUrl: URL\n    objectCount: Int!\n    truncated: Boolean\n    syncedAt: DateTime!\n    categories: [CategoryTotalInput!]!\n}\n\ninput CategoryTotalInput {\n    id: OID!\n    speckleType: String!\n    objectCount: Int!\n    unit: String\n    volume: Float\n    area: Float\n    length: Float\n}",
+              template:
+                "Adds or refreshes one revision together with the masses read off its object graph",
+              reducer:
+                'if (!action.input.versionId.trim() || !action.input.referencedObject.trim()) {\n    throw new IncompleteRevisionError("Both versionId and referencedObject are required");\n}\n\nif (!state.models.some((m) => m.speckleModelId === action.input.speckleModelId)) {\n    throw new UnknownRevisionModelError(`Model ${action.input.speckleModelId} must be mirrored before its revisions`);\n}\n\nconst categories = action.input.categories.map((c) => ({\n    id: c.id,\n    speckleType: c.speckleType,\n    objectCount: c.objectCount,\n    unit: c.unit || null,\n    volume: c.volume ?? null,\n    area: c.area ?? null,\n    length: c.length ?? null,\n}));\n\nconst existing = state.revisions.find((r) => r.versionId === action.input.versionId);\n\nif (existing) {\n    existing.modelName = action.input.modelName || null;\n    existing.referencedObject = action.input.referencedObject;\n    existing.message = action.input.message || null;\n    existing.sourceApplication = action.input.sourceApplication || null;\n    existing.authorName = action.input.authorName || null;\n    existing.createdAt = action.input.createdAt || null;\n    existing.previewUrl = action.input.previewUrl || null;\n    existing.objectCount = action.input.objectCount;\n    existing.truncated = action.input.truncated ?? false;\n    existing.categories = categories;\n    existing.syncedAt = action.input.syncedAt;\n} else {\n    state.revisions.push({\n        id: action.input.id,\n        speckleModelId: action.input.speckleModelId,\n        modelName: action.input.modelName || null,\n        versionId: action.input.versionId,\n        referencedObject: action.input.referencedObject,\n        message: action.input.message || null,\n        sourceApplication: action.input.sourceApplication || null,\n        authorName: action.input.authorName || null,\n        createdAt: action.input.createdAt || null,\n        previewUrl: action.input.previewUrl || null,\n        objectCount: action.input.objectCount,\n        truncated: action.input.truncated ?? false,\n        categories: categories,\n        syncedAt: action.input.syncedAt,\n    });\n}\n\n// Newest first, with a stable tie-break so the order never depends on arrival.\nstate.revisions.sort((a, b) => {\n    const left = a.createdAt ?? "";\n    const right = b.createdAt ?? "";\n\n    if (left === right) return a.versionId.localeCompare(b.versionId);\n\n    return right.localeCompare(left);\n});',
+              errors: [
+                {
+                  id: "err-incomplete-revision",
+                  name: "IncompleteRevisionError",
+                  code: "INCOMPLETE_REVISION",
+                  description:
+                    "versionId or referencedObject was blank or whitespace only",
+                  template: "",
+                },
+                {
+                  id: "err-unknown-revision-model",
+                  name: "UnknownRevisionModelError",
+                  code: "UNKNOWN_REVISION_MODEL",
+                  description: "The revision's model has not been mirrored yet",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+            {
+              id: "op-remove-revision",
+              name: "REMOVE_REVISION",
+              description: "Drops a revision that no longer exists in Speckle",
+              schema: "input RemoveRevisionInput {\n    versionId: String!\n}",
+              template: "Drops a revision that no longer exists in Speckle",
+              reducer:
+                "const index = state.revisions.findIndex((r) => r.versionId === action.input.versionId);\n\nif (index === -1) {\n    throw new RevisionNotFoundError(`Revision ${action.input.versionId} is not mirrored here`);\n}\n\nstate.revisions.splice(index, 1);\nstate.changes = state.changes.filter(\n    (c) => c.toVersionId !== action.input.versionId && c.fromVersionId !== action.input.versionId,\n);",
+              errors: [
+                {
+                  id: "err-revision-not-found",
+                  name: "RevisionNotFoundError",
+                  code: "REVISION_NOT_FOUND",
+                  description:
+                    "No revision with that version id is mirrored here",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+          ],
+        },
+        {
+          id: "mod-changes",
+          name: "changes",
+          description:
+            "Element-level differences between consecutive revisions",
+          operations: [
+            {
+              id: "op-record-change",
+              name: "RECORD_CHANGE",
+              description:
+                "Records which elements changed between two consecutive revisions and what that did to the masses",
+              schema:
+                "input RecordChangeInput {\n    id: OID!\n    speckleModelId: String!\n    fromVersionId: String\n    toVersionId: String!\n    detectedAt: DateTime!\n    touchedElements: [TouchedElementInput!]\n    deltas: [CategoryDeltaInput!]\n}\n\ninput TouchedElementInput {\n    id: OID!\n    identity: String!\n    objectId: String!\n    speckleType: String!\n    kind: ChangeKind!\n}\n\ninput CategoryDeltaInput {\n    id: OID!\n    speckleType: String!\n    unit: String\n    countBefore: Int!\n    countAfter: Int!\n    volumeBefore: Float\n    volumeAfter: Float\n    areaBefore: Float\n    areaAfter: Float\n}",
+              template:
+                "Records which elements changed between two consecutive revisions and what that did to the masses",
+              reducer:
+                'if (!action.input.toVersionId.trim()) {\n    throw new IncompleteChangeError("A change needs the revision it leads to");\n}\n\nif (!state.revisions.some((r) => r.versionId === action.input.toVersionId)) {\n    throw new ChangeRevisionUnknownError(`Revision ${action.input.toVersionId} is not mirrored here`);\n}\n\nconst touched = (action.input.touchedElements || []).map((e) => ({\n    id: e.id,\n    identity: e.identity,\n    objectId: e.objectId,\n    speckleType: e.speckleType,\n    kind: e.kind,\n}));\n\n// Counts are derived, never passed: they cannot then disagree with the list.\nconst countOf = (kind) => touched.filter((e) => e.kind === kind).length;\n\nconst deltas = (action.input.deltas || []).map((d) => ({\n    id: d.id,\n    speckleType: d.speckleType,\n    unit: d.unit || null,\n    countBefore: d.countBefore,\n    countAfter: d.countAfter,\n    volumeBefore: d.volumeBefore ?? null,\n    volumeAfter: d.volumeAfter ?? null,\n    areaBefore: d.areaBefore ?? null,\n    areaAfter: d.areaAfter ?? null,\n}));\n\nconst existing = state.changes.find(\n    (c) => c.toVersionId === action.input.toVersionId && c.speckleModelId === action.input.speckleModelId,\n);\n\nif (existing) {\n    existing.fromVersionId = action.input.fromVersionId || null;\n    existing.detectedAt = action.input.detectedAt;\n    existing.touchedElements = touched;\n    existing.addedCount = countOf("ADDED");\n    existing.removedCount = countOf("REMOVED");\n    existing.modifiedCount = countOf("MODIFIED");\n    existing.deltas = deltas;\n    return;\n}\n\nstate.changes.unshift({\n    id: action.input.id,\n    speckleModelId: action.input.speckleModelId,\n    fromVersionId: action.input.fromVersionId || null,\n    toVersionId: action.input.toVersionId,\n    detectedAt: action.input.detectedAt,\n    touchedElements: touched,\n    addedCount: countOf("ADDED"),\n    removedCount: countOf("REMOVED"),\n    modifiedCount: countOf("MODIFIED"),\n    deltas: deltas,\n});',
+              errors: [
+                {
+                  id: "err-incomplete-change",
+                  name: "IncompleteChangeError",
+                  code: "INCOMPLETE_CHANGE",
+                  description: "The change is missing the revision it leads to",
+                  template: "",
+                },
+                {
+                  id: "err-change-revision-unknown",
+                  name: "ChangeRevisionUnknownError",
+                  code: "CHANGE_REVISION_UNKNOWN",
+                  description:
+                    "The revision this change leads to is not mirrored here",
+                  template: "",
+                },
+              ],
+              examples: [],
+              scope: "global",
+            },
+          ],
+        },
+      ],
+      version: 1,
+      changeLog: [],
+    },
+  ],
+};

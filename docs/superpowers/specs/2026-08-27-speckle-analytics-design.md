@@ -1,7 +1,7 @@
 # Speckle analytics: design
 
 **Date:** 2026-08-27
-**Status:** approved for implementation
+**Status:** implemented and verified
 
 ## Purpose
 
@@ -144,3 +144,43 @@ mix) so the portfolio axis has something to compare.
 - Query latency is measured against the seeded data in a browser, with the
   acceptance bar: a chart query well under 200 ms warm, the tab painted under
   ~500 ms, and no dependence on object count.
+
+## What implementation changed about this design
+
+Three things only became visible while building, and the design above is written
+as it now stands rather than as it was first drafted.
+
+**The processor must be registered once per reactor, not once per drive.** The
+factory is called per drive, but this processor subscribes to every
+`speckle/project` document and writes into one analytics store. Registered per
+drive, two instances rebuilt the same document and interleaved one instance's
+`clearSeriesBySource` with the other's writes — every series counted four times
+over. The factory now builds exactly one record and returns an empty list for
+every later drive, and its relational namespace is keyed on a constant rather
+than a drive id so the subgraph can find the table.
+
+**Rebuilds are serialised per document.** Each rebuild is total, so two of them
+overlapping for one document corrupts the result the same way. A burst of
+batches now collapses into a single rerun.
+
+**`clearSeriesBySource` returns a driver result, not a count.** Worth knowing
+before using its return value for anything.
+
+## Verified
+
+Against both seeded projects, checked by hand from the source data:
+
+| | Bridge | Tower |
+| --- | --- | --- |
+| Revisions | 4 | 3 |
+| Elements (newest revision) | 38 | 37 |
+| Added / Modified / Removed | 9 / 16 / 5 | 24 / 8 / 1 |
+| Volume | 543.76 | 324.79 |
+
+Query latency, warm, against `/graphql/analytics` and `/graphql/speckle-hotspots`:
+**11–22 ms** — well inside the 200 ms bar, and independent of object count
+because the series are pre-aggregated per period and category.
+
+The seeded revision dates were spread across June to August in Speckle's own
+database, interleaved between the two projects. Without that every revision fell
+on the day it was seeded and the calendar axis was degenerate.

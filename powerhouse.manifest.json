@@ -1,0 +1,68 @@
+{
+  "name": "speckle-package",
+  "description": "Mirrors a Speckle project into Powerhouse documents: quantities, version history and what changed between revisions.",
+  "category": "AEC",
+  "publisher": {
+    "name": "Powerhouse",
+    "url": "https://www.powerhouse.inc/"
+  },
+  "documentModels": [
+    {
+      "id": "speckle/sync",
+      "name": "Speckle Sync"
+    },
+    {
+      "id": "speckle/project",
+      "name": "Speckle Project"
+    }
+  ],
+  "apps": [
+    {
+      "id": "speckle-workspace",
+      "name": "Speckle Workspace",
+      "documentTypes": [
+        "powerhouse/document-drive"
+      ]
+    }
+  ],
+  "editors": [
+    {
+      "id": "model-explorer",
+      "name": "Model Explorer",
+      "documentTypes": [
+        "speckle/project"
+      ]
+    },
+    {
+      "id": "sync-console",
+      "name": "Sync Console",
+      "documentTypes": [
+        "speckle/sync"
+      ]
+    },
+    {
+      "id": "speckle-workspace",
+      "name": "Speckle Workspace",
+      "documentTypes": [
+        "powerhouse/document-drive"
+      ]
+    }
+  ],
+  "processors": [
+    {
+      "id": "speckle-sync-runner",
+      "name": "Speckle Sync Runner"
+    },
+    {
+      "id": "speckle-analytics",
+      "name": "Speckle Analytics"
+    }
+  ],
+  "subgraphs": [
+    {
+      "name": "Speckle Hotspots",
+      "id": "speckle-hotspots"
+    }
+  ],
+  "config": []
+}

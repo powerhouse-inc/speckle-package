@@ -1,0 +1,253 @@
+{
+  "id": "speckle/sync",
+  "name": "Speckle Sync",
+  "author": {
+    "name": "Powerhouse",
+    "website": "https://www.powerhouse.inc/"
+  },
+  "extension": "sync",
+  "description": "The sync job for one Speckle project: which server and project to read, which Speckle Project document to mirror into, and an append-only log of every run. Requesting a sync is an operation, which is what a processor reacts to — so the pull is triggered by the document, not by a timer. Each collaborator keeps their own Speckle access token in private local scope.",
+  "specifications": [
+    {
+      "state": {
+        "local": {
+          "schema": "type SpeckleSyncLocalState {\n    accessToken: String\n    tokenLabel: String\n}",
+          "examples": [],
+          "initialValue": "{\n    \"accessToken\": null,\n    \"tokenLabel\": null\n}"
+        },
+        "global": {
+          "schema": "type SpeckleSyncState {\n    serverUrl: URL\n    projectId: String\n    projectName: String\n    targetProjectDocumentId: PHID\n    status: SyncStatus!\n    autoSync: Boolean!\n    versionsPerModel: Int!\n    maxObjectsPerVersion: Int!\n    lastRequestedAt: DateTime\n    lastCompletedAt: DateTime\n    lastError: String\n    runs: [SyncRun!]!\n}\n\ntype SyncRun {\n    id: OID!\n    requestedAt: DateTime!\n    startedAt: DateTime\n    finishedAt: DateTime\n    outcome: RunOutcome!\n    fullResync: Boolean!\n    modelsSeen: Int!\n    versionsSeen: Int!\n    versionsAdded: Int!\n    objectsScanned: Int!\n    message: String\n}\n\nenum SyncStatus {\n    IDLE\n    REQUESTED\n    RUNNING\n    FAILED\n}\n\nenum RunOutcome {\n    PENDING\n    SUCCESS\n    FAILURE\n    CANCELLED\n}",
+          "examples": [],
+          "initialValue": "{\n    \"serverUrl\": null,\n    \"projectId\": null,\n    \"projectName\": null,\n    \"targetProjectDocumentId\": null,\n    \"status\": \"IDLE\",\n    \"autoSync\": false,\n    \"versionsPerModel\": 25,\n    \"maxObjectsPerVersion\": 5000,\n    \"lastRequestedAt\": null,\n    \"lastCompletedAt\": null,\n    \"lastError\": null,\n    \"runs\": []\n}"
+        }
+      },
+      "modules": [
+        {
+          "id": "mod-connection",
+          "name": "connection",
+          "description": "Server, project, sync target and options",
+          "operations": [
+            {
+              "id": "op-set-server-connection",
+              "name": "SET_SERVER_CONNECTION",
+              "description": "Binds the sync to a Speckle server and project",
+              "schema": "input SetServerConnectionInput {\n    serverUrl: URL!\n    projectId: String!\n    projectName: String\n}",
+              "template": "Binds the sync to a Speckle server and project",
+              "reducer": "if (!action.input.projectId.trim()) {\n    throw new MissingProjectIdError(\"A Speckle project id is required\");\n}\n\nstate.serverUrl = action.input.serverUrl;\nstate.projectId = action.input.projectId;\nstate.projectName = action.input.projectName || null;",
+              "errors": [
+                {
+                  "id": "err-missing-project-id",
+                  "name": "MissingProjectIdError",
+                  "code": "MISSING_PROJECT_ID",
+                  "description": "The Speckle project id was blank or whitespace only",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-set-target-project-document",
+              "name": "SET_TARGET_PROJECT_DOCUMENT",
+              "description": "Names the Speckle Project document this sync mirrors into",
+              "schema": "input SetTargetProjectDocumentInput {\n    targetProjectDocumentId: PHID!\n}",
+              "template": "Names the Speckle Project document this sync mirrors into",
+              "reducer": "state.targetProjectDocumentId = action.input.targetProjectDocumentId;",
+              "errors": [],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-set-sync-options",
+              "name": "SET_SYNC_OPTIONS",
+              "description": "How much to pull per run",
+              "schema": "input SetSyncOptionsInput {\n    autoSync: Boolean\n    versionsPerModel: Int\n    maxObjectsPerVersion: Int\n}",
+              "template": "How much to pull per run",
+              "reducer": "if (action.input.autoSync !== undefined && action.input.autoSync !== null) {\n    state.autoSync = action.input.autoSync;\n}\n\nif (action.input.versionsPerModel !== undefined && action.input.versionsPerModel !== null) {\n    if (action.input.versionsPerModel < 1 || action.input.versionsPerModel > 200) {\n        throw new InvalidSyncOptionError(\"versionsPerModel must be between 1 and 200\");\n    }\n\n    state.versionsPerModel = action.input.versionsPerModel;\n}\n\nif (action.input.maxObjectsPerVersion !== undefined && action.input.maxObjectsPerVersion !== null) {\n    if (action.input.maxObjectsPerVersion < 1 || action.input.maxObjectsPerVersion > 100000) {\n        throw new InvalidSyncOptionError(\"maxObjectsPerVersion must be between 1 and 100000\");\n    }\n\n    state.maxObjectsPerVersion = action.input.maxObjectsPerVersion;\n}",
+              "errors": [
+                {
+                  "id": "err-invalid-sync-option",
+                  "name": "InvalidSyncOptionError",
+                  "code": "INVALID_SYNC_OPTION",
+                  "description": "A sync limit was outside its allowed range",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            }
+          ]
+        },
+        {
+          "id": "mod-credentials",
+          "name": "credentials",
+          "description": "Each collaborator's own Speckle token, private in local scope",
+          "operations": [
+            {
+              "id": "op-set-access-token",
+              "name": "SET_ACCESS_TOKEN",
+              "description": "Stores this user's private Speckle access token",
+              "schema": "input SetAccessTokenInput {\n    accessToken: String!\n    tokenLabel: String\n}",
+              "template": "Stores this user's private Speckle access token",
+              "reducer": "if (!action.input.accessToken.trim()) {\n    throw new EmptyAccessTokenError(\"Access token must not be empty\");\n}\n\nstate.accessToken = action.input.accessToken;\nstate.tokenLabel = action.input.tokenLabel || null;",
+              "errors": [
+                {
+                  "id": "err-empty-access-token",
+                  "name": "EmptyAccessTokenError",
+                  "code": "EMPTY_ACCESS_TOKEN",
+                  "description": "The supplied Speckle access token was blank or whitespace only",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "local"
+            },
+            {
+              "id": "op-clear-access-token",
+              "name": "CLEAR_ACCESS_TOKEN",
+              "description": "Removes this user's stored token",
+              "schema": "input ClearAccessTokenInput {\n    _: Boolean\n}",
+              "template": "Removes this user's stored token",
+              "reducer": "state.accessToken = null;\nstate.tokenLabel = null;",
+              "errors": [],
+              "examples": [],
+              "scope": "local"
+            }
+          ]
+        },
+        {
+          "id": "mod-runs",
+          "name": "runs",
+          "description": "Requesting a sync and recording how it went",
+          "operations": [
+            {
+              "id": "op-request-sync",
+              "name": "REQUEST_SYNC",
+              "description": "Asks for a sync. This operation is the trigger a processor reacts to. Set fullResync to re-walk revisions the runner already believes it has pulled",
+              "schema": "input RequestSyncInput {\n    id: OID!\n    requestedAt: DateTime!\n    fullResync: Boolean\n}",
+              "template": "Asks for a sync. This operation is the trigger a processor reacts to",
+              "reducer": "if (!state.projectId || !state.targetProjectDocumentId) {\n    throw new NotConfiguredError(\"Set the Speckle project and the target project document before syncing\");\n}\n\nif (state.status === \"REQUESTED\" || state.status === \"RUNNING\") {\n    throw new SyncAlreadyRunningError(`A sync is already ${state.status}`);\n}\n\nif (state.runs.some((r) => r.id === action.input.id)) {\n    throw new DuplicateRunError(`Run ${action.input.id} already exists`);\n}\n\nstate.status = \"REQUESTED\";\nstate.lastRequestedAt = action.input.requestedAt;\nstate.lastError = null;\n\nstate.runs.unshift({\n    id: action.input.id,\n    requestedAt: action.input.requestedAt,\n    startedAt: null,\n    finishedAt: null,\n    outcome: \"PENDING\",\n    // A full resync makes the runner ignore what it believes it has already\n    // pulled and walk every revision again.\n    fullResync: action.input.fullResync ?? false,\n    modelsSeen: 0,\n    versionsSeen: 0,\n    versionsAdded: 0,\n    objectsScanned: 0,\n    message: null,\n});",
+              "errors": [
+                {
+                  "id": "err-not-configured",
+                  "name": "NotConfiguredError",
+                  "code": "NOT_CONFIGURED",
+                  "description": "The sync has no Speckle project or no target project document",
+                  "template": ""
+                },
+                {
+                  "id": "err-sync-already-running",
+                  "name": "SyncAlreadyRunningError",
+                  "code": "SYNC_ALREADY_RUNNING",
+                  "description": "A sync is already requested or running",
+                  "template": ""
+                },
+                {
+                  "id": "err-duplicate-run",
+                  "name": "DuplicateRunError",
+                  "code": "DUPLICATE_RUN",
+                  "description": "A run with that id already exists",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-start-run",
+              "name": "START_RUN",
+              "description": "The processor marks the requested run as running",
+              "schema": "input StartRunInput {\n    runId: OID!\n    startedAt: DateTime!\n}",
+              "template": "The processor marks the requested run as running",
+              "reducer": "const run = state.runs.find((r) => r.id === action.input.runId);\n\nif (!run) {\n    throw new RunNotFoundError(`Run ${action.input.runId} not found`);\n}\n\nif (run.outcome !== \"PENDING\" || run.startedAt) {\n    throw new RunNotPendingError(`Run ${action.input.runId} is not pending`);\n}\n\nrun.startedAt = action.input.startedAt;\nstate.status = \"RUNNING\";",
+              "errors": [
+                {
+                  "id": "err-run-not-found",
+                  "name": "RunNotFoundError",
+                  "code": "RUN_NOT_FOUND",
+                  "description": "No run exists with the given id",
+                  "template": ""
+                },
+                {
+                  "id": "err-run-not-pending",
+                  "name": "RunNotPendingError",
+                  "code": "RUN_NOT_PENDING",
+                  "description": "That run has already been started or finished",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-complete-run",
+              "name": "COMPLETE_RUN",
+              "description": "Records a successful run and what it saw",
+              "schema": "input CompleteRunInput {\n    runId: OID!\n    finishedAt: DateTime!\n    modelsSeen: Int!\n    versionsSeen: Int!\n    versionsAdded: Int!\n    objectsScanned: Int!\n    message: String\n}",
+              "template": "Records a successful run and what it saw",
+              "reducer": "const run = state.runs.find((r) => r.id === action.input.runId);\n\nif (!run) {\n    throw new RunNotFoundError(`Run ${action.input.runId} not found`);\n}\n\nif (!run.startedAt || run.outcome !== \"PENDING\") {\n    throw new RunNotRunningError(`Run ${action.input.runId} is not running`);\n}\n\nrun.finishedAt = action.input.finishedAt;\nrun.outcome = \"SUCCESS\";\nrun.modelsSeen = action.input.modelsSeen;\nrun.versionsSeen = action.input.versionsSeen;\nrun.versionsAdded = action.input.versionsAdded;\nrun.objectsScanned = action.input.objectsScanned;\nrun.message = action.input.message || null;\n\nstate.status = \"IDLE\";\nstate.lastCompletedAt = action.input.finishedAt;\nstate.lastError = null;",
+              "errors": [
+                {
+                  "id": "err-run-not-running",
+                  "name": "RunNotRunningError",
+                  "code": "RUN_NOT_RUNNING",
+                  "description": "That run is not in a running state",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-fail-run",
+              "name": "FAIL_RUN",
+              "description": "Records a failed run with the reason",
+              "schema": "input FailRunInput {\n    runId: OID!\n    finishedAt: DateTime!\n    message: String!\n}",
+              "template": "Records a failed run with the reason",
+              "reducer": "const run = state.runs.find((r) => r.id === action.input.runId);\n\nif (!run) {\n    throw new RunNotFoundError(`Run ${action.input.runId} not found`);\n}\n\nif (!action.input.message.trim()) {\n    throw new MissingFailureMessageError(\"A failed run must record a reason\");\n}\n\nif (run.outcome !== \"PENDING\") {\n    throw new RunNotRunningError(`Run ${action.input.runId} has already finished`);\n}\n\nrun.finishedAt = action.input.finishedAt;\nrun.outcome = \"FAILURE\";\nrun.message = action.input.message;\n\nstate.status = \"FAILED\";\nstate.lastError = action.input.message;",
+              "errors": [
+                {
+                  "id": "err-missing-failure-message",
+                  "name": "MissingFailureMessageError",
+                  "code": "MISSING_FAILURE_MESSAGE",
+                  "description": "A failed run must record a reason",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            },
+            {
+              "id": "op-cancel-run",
+              "name": "CANCEL_RUN",
+              "description": "Abandons a run that was requested or started but never finished, so a new sync can be requested",
+              "schema": "input CancelRunInput {\n    runId: OID!\n    cancelledAt: DateTime!\n    reason: String!\n}",
+              "template": "",
+              "reducer": "const run = state.runs.find((r) => r.id === action.input.runId);\n\nif (!run) {\n    throw new RunNotFoundError(`Run ${action.input.runId} not found`);\n}\n\nif (!action.input.reason.trim()) {\n    throw new MissingCancelReasonError(\"A cancelled run must record a reason\");\n}\n\nif (run.outcome !== \"PENDING\") {\n    throw new RunAlreadyFinishedError(`Run ${action.input.runId} has already finished`);\n}\n\nrun.finishedAt = action.input.cancelledAt;\nrun.outcome = \"CANCELLED\";\nrun.message = action.input.reason;\n\n// Back to IDLE rather than FAILED: a cancellation is a decision, not a fault,\n// and the whole point is to unblock the next request.\nstate.status = \"IDLE\";\nstate.lastError = null;",
+              "errors": [
+                {
+                  "id": "err-run-already-finished",
+                  "name": "RunAlreadyFinishedError",
+                  "code": "RUN_ALREADY_FINISHED",
+                  "description": "That run has already reached a final outcome and cannot be cancelled",
+                  "template": ""
+                },
+                {
+                  "id": "err-missing-cancel-reason",
+                  "name": "MissingCancelReasonError",
+                  "code": "MISSING_CANCEL_REASON",
+                  "description": "A cancelled run must record why it was abandoned",
+                  "template": ""
+                }
+              ],
+              "examples": [],
+              "scope": "global"
+            }
+          ]
+        }
+      ],
+      "version": 1,
+      "changeLog": []
+    }
+  ]
+}

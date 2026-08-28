@@ -1,0 +1,24 @@
+# The build installs its own dependencies and generates its own output; sending
+# the local copies would add gigabytes of context for nothing.
+node_modules
+dist
+coverage
+*.tsbuildinfo
+
+# Local reactor state, including .ph/.keypair.json. Never in an image.
+.ph
+.env
+.env.local
+
+.git
+.github
+.claude
+.cursor
+.gemini
+.superpowers
+backup-documents
+docs
+README.md
+LICENSE
+AGENTS.md
+CLAUDE.md

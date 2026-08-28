@@ -9,3 +9,4 @@ node_modules
 projects-import.js
 
 .superpowers/
+.env

@@ -284,6 +284,12 @@ should move to OAuth or a dedicated secret store.
   one, and its scaffold is generated into `editors/<name>/`, not `apps/`. An editor
   document pointed at `powerhouse/document-drive` produces nothing usable.
 - Connect selects the drive app from the drive header's `meta.preferredEditor`.
+  `addDrive` over MCP accepts a `preferredEditor` field and a name and applies
+  **neither** — the drive comes back with `meta: {}` and an empty name, and
+  Connect silently falls back to "Drive Explorer App". Set them afterwards: the
+  `setPreferredEditor` mutation on `/graphql/r` (its result type is `PHDocument`,
+  which has no `header` field — select `preferredEditor` directly), and a
+  `SET_DRIVE_NAME` action for the name.
   `addDrive`'s `preferredEditor` argument does not set it; the Switchboard
   mutation `setPreferredEditor(documentIdentifier:, preferredEditor:)` does.
 - Once a drive app is active it owns the document routes too, so it has to render

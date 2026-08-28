@@ -1,0 +1,250 @@
+# One stack: Speckle, Postgres, and this package's Switchboard and Connect.
+#
+#   ./start.sh                      # build, start, wait for health, print URLs
+#   docker compose up -d --build    # the same, without the preflight checks
+#   docker compose --profile debug up -d maildev   # catch Speckle's outgoing mail
+#
+# Every host port comes from .env (see .env.example). Speckle's own compose
+# files hardcode http://127.0.0.1 in four places, which is why SPECKLE_ORIGIN
+# is derived once here and reused — changing the port must not leave the
+# frontend pointing somewhere the server is not.
+#
+# Note: Speckle's ingress reaches the other services by container name, so
+# `speckle-server` and `speckle-frontend-2` MUST keep exactly those names.
+name: speckle-package
+
+services:
+  # ===========================================================================
+  # Infrastructure
+  # ===========================================================================
+  postgres:
+    image: postgres:16.4-alpine3.20
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-speckle}
+      POSTGRES_USER: ${POSTGRES_USER:-speckle}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-speckle}
+    # Speckle's file importer uses prepared transactions.
+    command: postgres -c max_prepared_transactions=150
+    volumes:
+      - postgres-data:/var/lib/postgresql/data/
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-powerhouse.sql:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-speckle} -d ${POSTGRES_DB:-speckle}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: valkey/valkey:8.1-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    # Published because the browser uploads directly to S3_PUBLIC_ENDPOINT.
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ===========================================================================
+  # Speckle — published images, pinned. Not built from source.
+  # ===========================================================================
+  speckle-server:
+    image: speckle/speckle-server:${SPECKLE_TAG:-2.31.14}
+    restart: unless-stopped
+    environment:
+      CANONICAL_URL: ${SPECKLE_ORIGIN:-http://127.0.0.1}
+      FRONTEND_ORIGIN: ${SPECKLE_ORIGIN:-http://127.0.0.1}
+      # How other services in this network reach the server.
+      PRIVATE_OBJECTS_SERVER_URL: "http://speckle-server:3000"
+      SESSION_SECRET: ${SPECKLE_SESSION_SECRET:-local-dev-secret-change-me}
+      STRATEGY_LOCAL: "true"
+      LOG_LEVEL: "info"
+      LOG_PRETTY: "true"
+
+      POSTGRES_URL: "postgres"
+      POSTGRES_USER: ${POSTGRES_USER:-speckle}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-speckle}
+      POSTGRES_DB: ${POSTGRES_DB:-speckle}
+
+      REDIS_URL: "redis://redis"
+      PREVIEW_SERVICE_USE_PRIVATE_OBJECTS_SERVER_URL: "true"
+      PREVIEW_SERVICE_REDIS_URL: "redis://redis"
+      FILEIMPORT_SERVICE_USE_PRIVATE_OBJECTS_SERVER_URL: "true"
+      FILEIMPORT_SERVICE_REDIS_URL: "redis://redis"
+
+      S3_ENDPOINT: "http://minio:9000"
+      S3_PUBLIC_ENDPOINT: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: "speckle-server"
+      S3_CREATE_BUCKET: "true"
+      S3_REGION: ""
+
+      FILE_SIZE_LIMIT_MB: ${SPECKLE_FILE_SIZE_LIMIT_MB:-1000}
+      EMAIL_FROM: "no-reply@example.org"
+      EMAIL_SECURE: "false"
+      EMAIL_REQUIRE_TLS: "false"
+
+      FILEIMPORT_QUEUE_POSTGRES_URL: "postgresql://${POSTGRES_USER:-speckle}:${POSTGRES_PASSWORD:-speckle}@postgres/${POSTGRES_DB:-speckle}"
+      FF_NEXT_GEN_FILE_IMPORTER_ENABLED: "true"
+    healthcheck:
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - "try { require('node:http').request({headers: {'Content-Type': 'application/json'}, port:3000, hostname:'127.0.0.1', path:'/readiness', method: 'GET', timeout: 2000 }, (res) => { body = ''; res.on('data', (chunk) => {body += chunk;}); res.on('end', () => {process.exit(res.statusCode != 200 || body.toLowerCase().includes('error') ? 1 : 0);}); }).end(); } catch { process.exit(1); }"
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 90s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  speckle-frontend-2:
+    image: speckle/speckle-frontend-2:${SPECKLE_TAG:-2.31.14}
+    restart: unless-stopped
+    environment:
+      NUXT_PUBLIC_SERVER_NAME: "local"
+      NUXT_PUBLIC_API_ORIGIN: ${SPECKLE_ORIGIN:-http://127.0.0.1}
+      NUXT_PUBLIC_BASE_URL: ${SPECKLE_ORIGIN:-http://127.0.0.1}
+      NUXT_PUBLIC_BACKEND_API_ORIGIN: "http://speckle-server:3000"
+      NUXT_PUBLIC_LOG_LEVEL: "warn"
+      NUXT_REDIS_URL: "redis://redis"
+      LOG_LEVEL: "info"
+      LOG_PRETTY: "true"
+      NUXT_PUBLIC_FF_LARGE_FILE_IMPORTS_ENABLED: "true"
+      NUXT_PUBLIC_FF_NEXT_GEN_FILE_IMPORTER_ENABLED: "true"
+    depends_on:
+      - speckle-server
+
+  speckle-ingress:
+    image: speckle/speckle-docker-compose-ingress:${SPECKLE_TAG:-2.31.14}
+    restart: unless-stopped
+    environment:
+      FILE_SIZE_LIMIT_MB: ${SPECKLE_FILE_SIZE_LIMIT_MB:-1000}
+      NGINX_ENVSUBST_OUTPUT_DIR: "/etc/nginx"
+    ports:
+      - "${SPECKLE_PORT:-80}:8080"
+    depends_on:
+      - speckle-server
+      - speckle-frontend-2
+
+  preview-service:
+    image: speckle/speckle-preview-service:${SPECKLE_TAG:-2.31.14}
+    restart: unless-stopped
+    mem_limit: "3000m"
+    memswap_limit: "3000m"
+    environment:
+      HOST: "127.0.0.1"
+      PORT: "3001"
+      LOG_LEVEL: "info"
+      LOG_PRETTY: "true"
+      REDIS_URL: "redis://redis"
+    depends_on:
+      - speckle-server
+
+  webhook-service:
+    image: speckle/speckle-webhook-service:${SPECKLE_TAG:-2.31.14}
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: "info"
+      LOG_PRETTY: "true"
+      PG_CONNECTION_STRING: "postgres://${POSTGRES_USER:-speckle}:${POSTGRES_PASSWORD:-speckle}@postgres/${POSTGRES_DB:-speckle}"
+    depends_on:
+      - speckle-server
+
+  ifc-import-server:
+    image: speckle/speckle-ifc-import-service:${SPECKLE_TAG:-2.31.14}
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: "info"
+      LOG_PRETTY: "true"
+      FILEIMPORT_QUEUE_POSTGRES_URL: "postgresql://${POSTGRES_USER:-speckle}:${POSTGRES_PASSWORD:-speckle}@postgres/${POSTGRES_DB:-speckle}"
+    depends_on:
+      - speckle-server
+
+  # Optional: catches the mail Speckle would send (invites, verification).
+  maildev:
+    image: maildev/maildev
+    restart: unless-stopped
+    profiles: ["debug"]
+    ports:
+      - "127.0.0.1:${MAILDEV_UI_PORT:-1080}:1080"
+      - "127.0.0.1:${MAILDEV_SMTP_PORT:-1025}:1025"
+
+  # ===========================================================================
+  # Powerhouse — this package, built from the working tree
+  # ===========================================================================
+  switchboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.local
+      target: switchboard
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      # Reactor operation history and the read models (analytics, subgraphs).
+      DATABASE_URL: &powerhouse_db "postgres://${POSTGRES_USER:-speckle}:${POSTGRES_PASSWORD:-speckle}@postgres:5432/powerhouse"
+      PH_REACTOR_DATABASE_URL: *powerhouse_db
+      PH_SWITCHBOARD_DATABASE_URL: *powerhouse_db
+      # The sync runner's service credential — a Speckle personal access token.
+      # Never a collaborator's token from a document's local scope.
+      SPECKLE_TOKEN: ${SPECKLE_TOKEN:-}
+      # How the runner reaches Speckle from inside this network.
+      SPECKLE_SERVER_URL: "http://speckle-server:3000"
+    ports:
+      - "${SWITCHBOARD_PORT:-4001}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  connect:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.local
+      target: connect
+      args:
+        PH_CONNECT_BASE_PATH: "/"
+    restart: unless-stopped
+    environment:
+      PORT: "3001"
+      PH_CONNECT_BASE_PATH: "/"
+    ports:
+      - "${CONNECT_PORT:-3000}:3001"
+    depends_on:
+      - switchboard
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

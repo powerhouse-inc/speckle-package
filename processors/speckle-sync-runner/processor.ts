@@ -10,6 +10,7 @@ import {
   allTouched,
   categoryDeltas,
   diffGraphs,
+  internalUrl,
   summariseByType,
   type CategoryTotal,
   type SpeckleObjectLike,
@@ -112,6 +113,13 @@ export class SpeckleSyncRunner extends RelationalDbProcessor<DB> {
     if (!run || !base || !projectId || !target) return;
 
     const token = process.env.SPECKLE_TOKEN ?? null;
+    // The document keeps the URL the browser uses; the fetches may need
+    // another one. See internalUrl.
+    const fetchBase = internalUrl(
+      base,
+      process.env.SPECKLE_PUBLIC_ORIGIN,
+      process.env.SPECKLE_INTERNAL_ORIGIN,
+    );
     const versionsPerModel = state.versionsPerModel ?? 25;
     const maxObjects = state.maxObjectsPerVersion ?? 5000;
 
@@ -128,7 +136,7 @@ export class SpeckleSyncRunner extends RelationalDbProcessor<DB> {
     let objectsScanned = 0;
 
     try {
-      const overview = await fetchProjectOverview(base, projectId, token);
+      const overview = await fetchProjectOverview(fetchBase, projectId, token);
       const syncedAt = new Date().toISOString();
 
       await this.send(target, [
@@ -145,7 +153,7 @@ export class SpeckleSyncRunner extends RelationalDbProcessor<DB> {
         modelsSeen += 1;
 
         const { versions } = await fetchModelVersions(
-          base,
+          fetchBase,
           projectId,
           model.id,
           versionsPerModel,
@@ -189,7 +197,7 @@ export class SpeckleSyncRunner extends RelationalDbProcessor<DB> {
           }
 
           const { objects } = await fetchVersionObjects(
-            base,
+            fetchBase,
             projectId,
             version.referencedObject,
             { token, maxObjects },
@@ -216,7 +224,7 @@ export class SpeckleSyncRunner extends RelationalDbProcessor<DB> {
 
             if (predecessor) {
               const fetched = await fetchVersionObjects(
-                base,
+                fetchBase,
                 projectId,
                 predecessor.referencedObject,
                 { token, maxObjects },

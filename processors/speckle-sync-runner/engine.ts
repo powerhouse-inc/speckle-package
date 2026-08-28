@@ -395,3 +395,33 @@ export function categoryDeltas(
 
   return deltas;
 }
+
+/**
+ * Where the *server* should reach Speckle, which is not always where the
+ * browser reaches it.
+ *
+ * In a compose stack the browser talks to the published port on localhost
+ * while the reactor has to use a service name on the internal network. The
+ * document stores the browser's URL — the editor and the 3D viewer need that
+ * one — so only the fetch is redirected, and only when the origin matches the
+ * configured public one. A document pointing at some other Speckle server is
+ * left alone.
+ */
+export function internalUrl(
+  url: string,
+  publicOrigin: string | null | undefined,
+  internalOrigin: string | null | undefined,
+): string {
+  if (!publicOrigin || !internalOrigin) return url;
+
+  const strip = (value: string) => value.replace(/\/+$/, "");
+  const wanted = strip(publicOrigin).toLowerCase();
+  const actual = strip(url);
+
+  if (actual.toLowerCase() === wanted) return strip(internalOrigin);
+  if (actual.toLowerCase().startsWith(`${wanted}/`)) {
+    return strip(internalOrigin) + actual.slice(wanted.length);
+  }
+
+  return url;
+}

@@ -6,6 +6,7 @@ import {
   isElement,
   diffGraphs,
   identityOf,
+  internalUrl,
   summariseByType,
   toNumber,
   type SpeckleObjectLike,
@@ -577,5 +578,45 @@ describe("what counts as a building element", () => {
     expect(totals).toHaveLength(1);
     expect(totals[0].speckleType).toBe("IfcWallStandardCase");
     expect(totals[0].volume).toBe(5.8);
+  });
+});
+
+describe("internalUrl", () => {
+  const PUBLIC = "http://127.0.0.1";
+  const INTERNAL = "http://speckle-ingress:8080";
+
+  it("swaps the origin the server cannot reach for the one it can", () => {
+    expect(internalUrl(PUBLIC, PUBLIC, INTERNAL)).toBe(INTERNAL);
+  });
+
+  it("keeps the path, which carries the project and object ids", () => {
+    expect(
+      internalUrl(`${PUBLIC}/streams/abc/objects/def`, PUBLIC, INTERNAL),
+    ).toBe(`${INTERNAL}/streams/abc/objects/def`);
+  });
+
+  it("leaves a different Speckle server alone", () => {
+    expect(internalUrl("https://app.speckle.systems", PUBLIC, INTERNAL)).toBe(
+      "https://app.speckle.systems",
+    );
+  });
+
+  it("does not mistake a longer host for the configured one", () => {
+    // http://127.0.0.1.evil.example must not match http://127.0.0.1
+    expect(
+      internalUrl("http://127.0.0.1.evil.example/graphql", PUBLIC, INTERNAL),
+    ).toBe("http://127.0.0.1.evil.example/graphql");
+  });
+
+  it("ignores trailing slashes on either side", () => {
+    expect(internalUrl(`${PUBLIC}/`, `${PUBLIC}/`, `${INTERNAL}/`)).toBe(
+      INTERNAL,
+    );
+  });
+
+  it("is a no-op unless both origins are configured", () => {
+    expect(internalUrl(PUBLIC, null, INTERNAL)).toBe(PUBLIC);
+    expect(internalUrl(PUBLIC, PUBLIC, undefined)).toBe(PUBLIC);
+    expect(internalUrl(PUBLIC, undefined, undefined)).toBe(PUBLIC);
   });
 });

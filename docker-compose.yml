@@ -220,8 +220,12 @@ services:
       # The sync runner's service credential — a Speckle personal access token.
       # Never a collaborator's token from a document's local scope.
       SPECKLE_TOKEN: ${SPECKLE_TOKEN:-}
-      # How the runner reaches Speckle from inside this network.
-      SPECKLE_SERVER_URL: "http://speckle-server:3000"
+      # The sync document stores the URL the *browser* uses — the editor and the
+      # 3D viewer need that one. The runner cannot use it: inside this network
+      # 127.0.0.1 is the switchboard itself. These two let it rewrite just the
+      # origin, and only for this Speckle.
+      SPECKLE_PUBLIC_ORIGIN: ${SPECKLE_ORIGIN:-http://127.0.0.1}
+      SPECKLE_INTERNAL_ORIGIN: "http://speckle-ingress:8080"
     ports:
       - "${SWITCHBOARD_PORT:-4001}:3000"
     depends_on:

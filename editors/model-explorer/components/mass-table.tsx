@@ -57,9 +57,29 @@ export function MassTable({
     );
   }
 
+  // Every figure column is right-aligned, so its header has to be too.
+  const number = (label: string) => ({ label, align: "right" as const });
+
   const headers = showDeltas
-    ? ["Category", "Count", "Δ", "Volume", "Δ", "Area", "Δ", "Length", "Unit"]
-    : ["Category", "Count", "Volume", "Area", "Length", "Unit"];
+    ? [
+        "Category",
+        number("Count"),
+        number("Δ"),
+        number("Volume"),
+        number("Δ"),
+        number("Area"),
+        number("Δ"),
+        number("Length"),
+        "Unit",
+      ]
+    : [
+        "Category",
+        number("Count"),
+        number("Volume"),
+        number("Area"),
+        number("Length"),
+        "Unit",
+      ];
 
   return (
     <div className="flex flex-col gap-2">

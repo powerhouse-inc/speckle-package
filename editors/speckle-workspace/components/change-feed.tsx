@@ -26,7 +26,15 @@ export function ChangeFeed({
 
   return (
     <Table
-      headers={["When", "Project", "Model", "Revision", "Added", "Modified", "Removed"]}
+      headers={[
+        "When",
+        "Project",
+        "Model",
+        "Revision",
+        { label: "Added", align: "right" },
+        { label: "Modified", align: "right" },
+        { label: "Removed", align: "right" },
+      ]}
     >
       {entries.map((entry) => (
         <Row key={entry.key} onClick={() => onOpen(entry.documentId)}>

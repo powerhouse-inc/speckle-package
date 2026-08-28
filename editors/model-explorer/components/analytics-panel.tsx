@@ -245,10 +245,10 @@ export function AnalyticsPanel({
             headers={[
               "Element",
               "Category",
-              "Touches",
-              "Added",
-              "Modified",
-              "Removed",
+              { label: "Touches", align: "right" },
+              { label: "Added", align: "right" },
+              { label: "Modified", align: "right" },
+              { label: "Removed", align: "right" },
               "First detected",
               "Last detected",
             ]}

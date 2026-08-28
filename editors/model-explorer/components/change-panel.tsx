@@ -130,7 +130,14 @@ export function ChangePanel({
           quantities.
         </p>
       ) : (
-        <Table headers={["Category", "Count", "Volume", "Area"]}>
+        <Table
+          headers={[
+            "Category",
+            { label: "Count", align: "right" },
+            { label: "Volume", align: "right" },
+            { label: "Area", align: "right" },
+          ]}
+        >
           {change.deltas.map((delta) => (
             <Row key={delta.speckleType}>
               <Cell

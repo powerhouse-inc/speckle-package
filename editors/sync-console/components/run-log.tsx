@@ -38,11 +38,11 @@ export function RunLog({ runs }: { runs: SyncRun[] }) {
       headers={[
         "Requested",
         "Outcome",
-        "Models",
-        "Versions",
-        "New",
-        "Objects",
-        "Took",
+        { label: "Models", align: "right" },
+        { label: "Versions", align: "right" },
+        { label: "New", align: "right" },
+        { label: "Objects", align: "right" },
+        { label: "Took", align: "right" },
         "Mode",
         "Detail",
       ]}

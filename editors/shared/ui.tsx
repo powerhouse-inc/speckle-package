@@ -442,12 +442,41 @@ export function NumberCell({
 
 /* ------------------------------------------------------------------- table */
 
+export type Align = "left" | "right" | "center";
+
+/**
+ * A column header, optionally aligned.
+ *
+ * A header must be able to sit over its own numbers: left-aligned labels above
+ * right-aligned figures read as a shifted table.
+ */
+export type Column = ReactNode | { label: ReactNode; align: Align };
+
+const ALIGN_CLASS: Record<Align, string> = {
+  left: "text-left",
+  right: "text-right",
+  center: "text-center",
+};
+
+function columnOf(column: Column): { label: ReactNode; align: Align } {
+  if (
+    column !== null &&
+    typeof column === "object" &&
+    "label" in column &&
+    "align" in column
+  ) {
+    return column;
+  }
+
+  return { label: column, align: "left" };
+}
+
 export function Table({
   headers,
   children,
   className = "",
 }: {
-  headers: ReactNode[];
+  headers: Column[];
   children: ReactNode;
   className?: string;
 }) {
@@ -456,14 +485,18 @@ export function Table({
       <table className="w-full min-w-full border-collapse text-xs">
         <thead>
           <tr className="border-b border-slate-200 dark:border-slate-700">
-            {headers.map((header, index) => (
-              <th
-                key={index}
-                className="px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
-              >
-                {header}
-              </th>
-            ))}
+            {headers.map((header, index) => {
+              const { label, align } = columnOf(header);
+
+              return (
+                <th
+                  key={index}
+                  className={`px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 ${ALIGN_CLASS[align]}`}
+                >
+                  {label}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>{children}</tbody>

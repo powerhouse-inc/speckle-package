@@ -62,20 +62,123 @@ export function toNumber(value: unknown): number | null {
   return null;
 }
 
-function read(object: SpeckleObjectLike, key: string): number | null {
+/** IFC base quantity names, most specific first — net is what was built. */
+const IFC_QUANTITY_NAMES: Record<"volume" | "area" | "length", string[]> = {
+  volume: ["NetVolume", "GrossVolume"],
+  area: ["NetSideArea", "NetArea", "GrossSideArea", "GrossArea", "NetFloorArea"],
+  length: ["Length", "Height", "Width"],
+};
+
+function quantityGroups(object: SpeckleObjectLike): Record<string, unknown>[] {
+  const properties = object.data?.properties;
+
+  if (properties === null || typeof properties !== "object") return [];
+
+  const quantities = (properties as Record<string, unknown>).Quantities;
+
+  if (quantities === null || typeof quantities !== "object") return [];
+
+  // BaseQuantities is the IFC standard set; an exporter may add its own beside
+  // it, and those are worth falling back to rather than reporting nothing.
+  const groups = Object.entries(quantities as Record<string, unknown>)
+    .filter(
+      (entry): entry is [string, Record<string, unknown>] =>
+        entry[1] !== null && typeof entry[1] === "object",
+    )
+    .sort(([a], [b]) =>
+      a === "BaseQuantities" ? -1 : b === "BaseQuantities" ? 1 : a.localeCompare(b),
+    );
+
+  return groups.map(([, group]) => group);
+}
+
+/**
+ * A quantity off an object, wherever the exporter put it.
+ *
+ * Revit and the Speckle connectors write `volume` at the top level; an IFC
+ * import nests the same fact under `properties.Quantities.BaseQuantities` as
+ * `NetVolume`, wrapped as `{ name, units, value }`. Reading only the first shape
+ * reports zero for every IFC-sourced model.
+ */
+function read(
+  object: SpeckleObjectLike,
+  key: "volume" | "area" | "length",
+): number | null {
   const data = object.data;
   if (!data) return null;
 
-  // Revit and IFC exporters disagree on capitalisation.
-  return (
+  const direct =
     toNumber(data[key]) ??
-    toNumber(data[key.charAt(0).toUpperCase() + key.slice(1)])
-  );
+    toNumber(data[key.charAt(0).toUpperCase() + key.slice(1)]);
+
+  if (direct != null) return direct;
+
+  for (const group of quantityGroups(object)) {
+    for (const name of IFC_QUANTITY_NAMES[key]) {
+      const value = toNumber(group[name]);
+
+      if (value != null) return value;
+    }
+  }
+
+  return null;
+}
+
+const UNIT_NAMES: Record<string, string> = {
+  metre: "m",
+  meter: "m",
+  millimetre: "mm",
+  millimeter: "mm",
+  centimetre: "cm",
+  centimeter: "cm",
+  foot: "ft",
+  feet: "ft",
+  inch: "in",
+};
+
+/** `Cubic Metre` is a unit of volume; the unit we report is its length base. */
+function baseUnit(name: string): string | null {
+  const word = name.toLowerCase().replace(/^(cubic|square)\s+/, "").trim();
+
+  return UNIT_NAMES[word] ?? null;
 }
 
 function unitOf(object: SpeckleObjectLike): string | null {
   const units = object.data?.units;
-  return typeof units === "string" && units.length > 0 ? units : null;
+
+  if (typeof units === "string" && units.length > 0) return units;
+
+  // An IFC quantity carries its own unit name, spelled out in full.
+  for (const group of quantityGroups(object)) {
+    for (const value of Object.values(group)) {
+      if (value === null || typeof value !== "object") continue;
+
+      const name = (value as { units?: unknown }).units;
+
+      if (typeof name !== "string") continue;
+
+      const unit = baseUnit(name);
+
+      if (unit) return unit;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The category an object belongs to.
+ *
+ * An IFC import types everything as `Objects.Data.DataObject` and puts the real
+ * class in `ifcType`, so grouping on the Speckle type alone would collapse a
+ * whole building into one bucket.
+ */
+export function categoryOf(object: SpeckleObjectLike): string {
+  const ifcType = object.data?.ifcType;
+
+  if (typeof ifcType === "string" && ifcType.length > 0) return ifcType;
+
+  return object.speckleType ?? "Unknown";
 }
 
 /**
@@ -99,7 +202,41 @@ function round(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
-/** Total count, volume, area and length per Speckle type. */
+/**
+ * Spatial structure, not building elements.
+ *
+ * An IFC file describes a site containing a building containing storeys
+ * containing spaces. Those carry quantities of their own — a room's volume is
+ * the air in it — and adding that to the concrete in the walls would produce a
+ * number that means nothing. They are context, not material.
+ */
+const SPATIAL_TYPES = new Set([
+  "IfcProject",
+  "IfcSite",
+  "IfcBuilding",
+  "IfcBuildingStorey",
+  "IfcSpace",
+  "IfcZone",
+  "IfcSpatialZone",
+  "IfcSpatialElement",
+]);
+
+/**
+ * Whether an object is a building element worth totalling.
+ *
+ * Excludes the spatial containers above, and raw geometry: an IFC import walks
+ * display meshes as objects in their own right, and they are the same material
+ * counted twice.
+ */
+export function isElement(object: SpeckleObjectLike): boolean {
+  const category = categoryOf(object);
+
+  if (SPATIAL_TYPES.has(category)) return false;
+
+  return !category.startsWith("Objects.Geometry.");
+}
+
+/** Total count, volume, area and length per Speckle type, elements only. */
 export function summariseByType(
   objects: SpeckleObjectLike[],
 ): CategoryTotal[] {
@@ -115,7 +252,9 @@ export function summariseByType(
   >();
 
   for (const object of objects) {
-    const speckleType = object.speckleType ?? "Unknown";
+    if (!isElement(object)) continue;
+
+    const speckleType = categoryOf(object);
 
     const entry =
       byType.get(speckleType) ??

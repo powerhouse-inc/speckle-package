@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   allTouched,
   categoryDeltas,
+  categoryOf,
+  isElement,
   diffGraphs,
   identityOf,
   summariseByType,
@@ -368,5 +370,212 @@ describe("categoryDeltas", () => {
     expect(
       categoryDeltas([total("Wall", 5, { volume: 1, area: 2 })], [total("Wall", 5, { volume: 1, area: 2 })]),
     ).toStrictEqual([]);
+  });
+});
+
+describe("objects as an IFC import writes them", () => {
+  /** The shape speckle_ifc produces: one DataObject type, real class in ifcType. */
+  function ifcWall(
+    id: string,
+    globalId: string,
+    quantities: Record<string, unknown>,
+    ifcType = "IfcWallStandardCase",
+  ): SpeckleObjectLike {
+    return {
+      id,
+      speckleType: "Objects.Data.DataObject",
+      data: {
+        ifcType,
+        applicationId: globalId,
+        name: "Wand-Ext-ERDG-1",
+        properties: {
+          Attributes: { GlobalId: globalId, type: ifcType },
+          Quantities: { BaseQuantities: quantities },
+          "Building Storey": "Erdgeschoss",
+        },
+      },
+    };
+  }
+
+  const BASE = {
+    Width: { name: "Width", units: "Metre", value: 0.3 },
+    Height: { name: "Height", units: "Metre", value: 2.7 },
+    Length: { name: "Length", units: "Metre", value: 9.7 },
+    NetVolume: { name: "NetVolume", units: "Cubic Metre", value: 5.80797 },
+    GrossVolume: { name: "GrossVolume", units: "Cubic Metre", value: 7.857 },
+    NetSideArea: { name: "NetSideArea", units: "Square Metre", value: 26.19 },
+  };
+
+  it("groups on the IFC class, not on the one Speckle type they all share", () => {
+    expect(categoryOf(ifcWall("a", "g1", BASE))).toBe("IfcWallStandardCase");
+    expect(
+      categoryOf(ifcWall("b", "g2", BASE, "IfcSlab")),
+    ).toBe("IfcSlab");
+
+    // Objects that are not from an IFC import keep their Speckle type.
+    expect(
+      categoryOf({ id: "c", speckleType: "Objects.BuiltElements.Wall" }),
+    ).toBe("Objects.BuiltElements.Wall");
+    expect(categoryOf({ id: "d" })).toBe("Unknown");
+    expect(categoryOf({ id: "e", speckleType: "X", data: { ifcType: "" } })).toBe("X");
+  });
+
+  it("reads the quantities out of the IFC base set", () => {
+    const totals = summariseByType([ifcWall("a", "g1", BASE)]);
+
+    expect(totals).toHaveLength(1);
+    expect(totals[0].speckleType).toBe("IfcWallStandardCase");
+    // Net, not gross: net is what was built.
+    expect(totals[0].volume).toBe(5.808);
+    expect(totals[0].area).toBe(26.19);
+    expect(totals[0].length).toBe(9.7);
+  });
+
+  it("derives the unit from the quantity's own spelled-out name", () => {
+    const totals = summariseByType([ifcWall("a", "g1", BASE)]);
+
+    // "Cubic Metre" is a volume in metres; the reported unit is the length base.
+    expect(totals[0].unit).toBe("m");
+
+    const imperial = summariseByType([
+      ifcWall("b", "g2", {
+        NetVolume: { name: "NetVolume", units: "Cubic Foot", value: 12 },
+      }),
+    ]);
+
+    expect(imperial[0].unit).toBe("ft");
+  });
+
+  it("prefers a unit the object states outright", () => {
+    const object = ifcWall("a", "g1", BASE);
+    object.data!.units = "mm";
+
+    expect(summariseByType([object])[0].unit).toBe("mm");
+  });
+
+  it("falls back to another exporter's quantity group", () => {
+    const object: SpeckleObjectLike = {
+      id: "a",
+      speckleType: "Objects.Data.DataObject",
+      data: {
+        ifcType: "IfcSlab",
+        properties: {
+          Quantities: {
+            ArchiCADQuantities: {
+              NetVolume: { name: "NetVolume", units: "Cubic Metre", value: 3.5 },
+            },
+          },
+        },
+      },
+    };
+
+    expect(summariseByType([object])[0].volume).toBe(3.5);
+  });
+
+  it("still totals the shape the speckle connectors write", () => {
+    const totals = summariseByType([
+      { id: "a", speckleType: "Objects.BuiltElements.Wall", data: { units: "m", volume: 34.3 } },
+    ]);
+
+    expect(totals[0].volume).toBe(34.3);
+    expect(totals[0].unit).toBe("m");
+  });
+
+  it("takes the IFC GlobalId as the element's identity", () => {
+    // Which is the most stable identifier the format has.
+    expect(identityOf(ifcWall("hash", "3rPX_Juz59peXXY6wDJl18", BASE))).toBe(
+      "app:3rPX_Juz59peXXY6wDJl18",
+    );
+  });
+
+  it("copes with objects that carry no quantities at all", () => {
+    const bare: SpeckleObjectLike = {
+      id: "a",
+      speckleType: "Objects.Data.DataObject",
+      // A real element, not a space: spaces are spatial structure and excluded.
+      data: { ifcType: "IfcRailing", properties: { Attributes: {} } },
+    };
+
+    const totals = summariseByType([bare]);
+
+    expect(totals[0]).toStrictEqual({
+      speckleType: "IfcRailing",
+      objectCount: 1,
+      unit: null,
+      volume: null,
+      area: null,
+      length: null,
+    });
+  });
+});
+
+describe("what counts as a building element", () => {
+  const of = (speckleType: string, ifcType?: string): SpeckleObjectLike => ({
+    id: speckleType,
+    speckleType,
+    data: ifcType ? { ifcType } : undefined,
+  });
+
+  it("leaves out the spatial structure an IFC file is organised by", () => {
+    for (const type of [
+      "IfcProject",
+      "IfcSite",
+      "IfcBuilding",
+      "IfcBuildingStorey",
+      "IfcSpace",
+      "IfcZone",
+    ]) {
+      expect(isElement(of("Objects.Data.DataObject", type))).toBe(false);
+    }
+  });
+
+  it("leaves out raw geometry, which is the same material counted twice", () => {
+    expect(isElement(of("Objects.Geometry.Mesh"))).toBe(false);
+    expect(isElement(of("Objects.Geometry.Brep"))).toBe(false);
+  });
+
+  it("keeps everything that is actually built", () => {
+    expect(isElement(of("Objects.Data.DataObject", "IfcWallStandardCase"))).toBe(true);
+    expect(isElement(of("Objects.Data.DataObject", "IfcSlab"))).toBe(true);
+    expect(isElement(of("Objects.BuiltElements.Wall"))).toBe(true);
+  });
+
+  it("totals only the elements", () => {
+    const totals = summariseByType([
+      {
+        id: "wall",
+        speckleType: "Objects.Data.DataObject",
+        data: {
+          ifcType: "IfcWallStandardCase",
+          properties: {
+            Quantities: {
+              BaseQuantities: {
+                NetVolume: { name: "NetVolume", units: "Cubic Metre", value: 5.8 },
+              },
+            },
+          },
+        },
+      },
+      {
+        id: "room",
+        speckleType: "Objects.Data.DataObject",
+        data: {
+          ifcType: "IfcSpace",
+          properties: {
+            Quantities: {
+              BaseQuantities: {
+                NetVolume: { name: "NetVolume", units: "Cubic Metre", value: 210 },
+              },
+            },
+          },
+        },
+      },
+      { id: "mesh", speckleType: "Objects.Geometry.Mesh" },
+    ]);
+
+    // The room's air and the display mesh are both out; only the wall counts.
+    expect(totals).toHaveLength(1);
+    expect(totals[0].speckleType).toBe("IfcWallStandardCase");
+    expect(totals[0].volume).toBe(5.8);
   });
 });

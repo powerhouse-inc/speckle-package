@@ -55,9 +55,19 @@ Speckle graph and dispatches the results into the mirror document.
 
 Its interesting part is `engine.ts`, which is pure and unit-tested:
 
-- **`summariseByType`** totals volume, area and length per Speckle type, reading
-  both `volume` and `Volume` (Revit and IFC exporters disagree on capitalisation)
-  and unwrapping `{ value: n }` parameters.
+- **`summariseByType`** totals volume, area and length per category. It reads the
+  two shapes exporters actually produce: the Speckle connectors write `volume` at
+  the top level, while an IFC import nests the same fact under
+  `properties.Quantities.BaseQuantities` as `NetVolume`, wrapped as
+  `{ name, units, value }` with the unit spelled out ("Cubic Metre"). It also
+  groups on `ifcType` where there is one — an IFC import types every object
+  `Objects.Data.DataObject`, so grouping on the Speckle type alone collapses a
+  whole building into one bucket.
+- **`isElement`** keeps spatial structure and raw geometry out of the totals. An
+  IFC file is organised as site → building → storey → space, and those carry
+  quantities of their own: adding a room's air to the concrete in the walls
+  produces a number that means nothing. Display meshes are excluded for the same
+  reason — they are the same material counted twice.
 - **`diffGraphs`** diffs on `applicationId` — the authoring tool's own element id
   — rather than on the Speckle object id, which is a content hash. Diffing on the
   hash alone would report every edited wall as one deletion plus one addition;

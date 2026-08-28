@@ -1,0 +1,140 @@
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# Local build of THIS repo's source, as two images: switchboard and connect.
+#
+# The published-package targets in ./Dockerfile use `ph init` + `ph install
+# <PACKAGE_NAME>`, which cannot install an unpublished package — and its local
+# fallback copies only package.json, never the source. This file builds what is
+# actually in the working tree, which is what the compose stack needs.
+#
+#   docker build -f docker/Dockerfile.local --target switchboard -t speckle-package/switchboard .
+#   docker build -f docker/Dockerfile.local --target connect     -t speckle-package/connect .
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Shared base: dependencies plus the repo source that `ph` loads at runtime.
+# -----------------------------------------------------------------------------
+FROM node:24-alpine AS local-base
+
+# Native module toolchain, plus curl/openssl for the runtime healthcheck.
+RUN apk add --no-cache python3 make g++ git bash curl openssl libc6-compat \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+# NODE_ENV must NOT be production while installing: the runtime toolchain
+# (ph-cli, @powerhousedao/reactor, pglite) is classified as a devDependency.
+# Compose sets NODE_ENV=production for the running container.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    npm_config_update_notifier=false \
+    PATH=/app/node_modules/.bin:$PATH
+
+WORKDIR /app
+
+# .npmrc carries the @jsr registry, which some Powerhouse deps resolve through.
+COPY package.json package-lock.json .npmrc ./
+
+# A BuildKit cache mount keeps the npm cache across builds, so a rebuild after
+# a dependency bump re-uses every unchanged tarball.
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci --no-audit --no-fund
+
+# The reactor validates its schema with `instanceof GraphQLSchema`. Two physical
+# copies of graphql in the tree mean two classes, the check fails, and the
+# switchboard dies on boot with "Expected ... to be a GraphQL schema". npm's
+# flat tree dedupes to one copy — assert it here so a future dependency bump
+# that reintroduces a second copy fails the build instead of the boot.
+RUN n=$(find node_modules -path '*node_modules/graphql/package.json' -exec grep -m1 '"version"' {} \; | sort -u | wc -l); \
+    echo "distinct graphql versions: $n"; \
+    [ "$n" = "1" ] || { echo "FAIL: expected exactly one graphql version"; exit 1; }
+
+# `ph` from the local install. Not a symlink to the npm bin shim: that shim
+# resolves its target relative to $0, so a link in /usr/local/bin computes the
+# wrong path. A wrapper that execs the absolute cli.mjs is stable.
+RUN printf '#!/bin/sh\nexport NODE_PATH=/app/node_modules\nexec node /app/node_modules/@powerhousedao/ph-cli/dist/cli.mjs "$@"\n' \
+    > /usr/local/bin/ph && chmod +x /usr/local/bin/ph
+
+# Repo source. `ph switchboard` and `ph connect build` read the directories
+# named in powerhouse.config.json at load time, so this is not build output —
+# it is what the reactor serves.
+COPY powerhouse.config.json powerhouse.manifest.json tsconfig.json ./
+COPY index.ts index.html main.tsx style.css ./
+COPY document-models ./document-models
+COPY editors ./editors
+COPY processors ./processors
+COPY subgraphs ./subgraphs
+COPY reactor ./reactor
+
+# -----------------------------------------------------------------------------
+# Switchboard: the reactor API, GraphQL, analytics and subgraphs.
+# -----------------------------------------------------------------------------
+FROM local-base AS switchboard
+
+# The reactor loads a package by importing `<name>/document-models`,
+# `<name>/subgraphs` and `<name>/processors`. Those subpaths exist only in
+# package.json's exports map, and Node applies an exports map only to *bare*
+# specifiers — never to a path. So the implicit local package (the project
+# directory) can never load under plain node: `import("/app/document-models")`
+# fails with ERR_UNSUPPORTED_DIR_IMPORT, and every loader gives up silently.
+#
+# Two steps make it resolvable, in this order: build the package, then link it
+# into node_modules under its own name. Linking first would make the build walk
+# a directory that contains itself.
+RUN ph build
+
+RUN PKG=$(node -p "require('./package.json').name"); \
+    [ "$PKG" = "speckle-package" ] || { echo "package.json name is now '$PKG' — update PH_PACKAGES below"; exit 1; }; \
+    mkdir -p node_modules && ln -sfn /app "node_modules/$PKG"
+
+# Verify the three entries the reactor asks for actually resolve, so a broken
+# build fails here instead of booting a switchboard that serves nothing.
+RUN node -e "await Promise.all(['document-models','subgraphs','processors'].map(p => import('speckle-package/'+p)))"
+
+ENV NODE_ENV=production \
+    PORT=3000 \
+    SKIP_DB_MIGRATIONS=false \
+    PH_PACKAGES=speckle-package \
+    PH_IGNORE_LOCAL=true
+
+COPY docker/switchboard-entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=10 \
+    CMD curl -fsS http://localhost:${PORT}/health || exit 1
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# -----------------------------------------------------------------------------
+# Connect build: a static bundle of the editors and drive apps.
+# -----------------------------------------------------------------------------
+FROM local-base AS connect-builder
+
+ARG PH_CONNECT_BASE_PATH="/"
+RUN ph connect build --base ${PH_CONNECT_BASE_PATH}
+
+# The build lands under .ph/connect-build/dist. Fail loudly here rather than
+# shipping an nginx image that serves an empty root.
+RUN test -f /app/.ph/connect-build/dist/index.html
+
+# -----------------------------------------------------------------------------
+# Connect: nginx serving that bundle.
+# -----------------------------------------------------------------------------
+FROM nginx:alpine AS connect
+
+RUN apk add --no-cache gettext
+
+COPY docker/nginx.conf /etc/nginx/nginx.conf.template
+COPY --from=connect-builder /app/.ph/connect-build/dist /var/www/html/project
+
+ENV PORT=3001 \
+    PH_CONNECT_BASE_PATH="/"
+
+COPY docker/connect-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD wget -q --spider http://localhost:${PORT}/health || exit 1
+
+ENTRYPOINT ["/docker-entrypoint.sh"]

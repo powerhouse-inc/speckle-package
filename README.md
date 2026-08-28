@@ -213,6 +213,60 @@ Then, in Vetra Studio:
    to confirm they resolve, pick the mirror as the target, then **Run sync**.
 4. Open the mirror. Step the timeline with ← / →.
 
+### Everything in Docker
+
+`ph vetra` is the way to develop; `docker compose` is the way to *run* the whole
+thing on one machine — Speckle, Postgres, Redis, MinIO, and this package's
+Switchboard and Connect.
+
+```bash
+./start.sh              # build, start, wait for health, print the URLs
+./start.sh --no-build   # start what is already built
+./start.sh --rebuild    # rebuild the two images without the layer cache
+./start.sh --debug      # also start maildev, to read Speckle's outgoing mail
+./start.sh --down       # stop, keep the volumes
+./start.sh --down-all   # stop and delete the volumes
+```
+
+| | |
+|---|---|
+| Speckle | `http://127.0.0.1` |
+| Connect | `http://localhost:3000` |
+| Switchboard | `http://localhost:4001` — `/graphql`, `/graphql/analytics`, `/mcp` |
+| Postgres | `localhost:5432`, databases `speckle` and `powerhouse` |
+
+Two things the script cannot do for you: register the first Speckle account, and
+create a personal access token for it (`streams:read`, `users:read`) to put in
+`.env` as `SPECKLE_TOKEN`. Until then the runner can only read public projects.
+
+Every host port comes from `.env` (copied from `.env.example` on first run).
+Speckle is the reason that matters: it serves its own origin to the browser, so
+`SPECKLE_PORT` and `SPECKLE_ORIGIN` must agree — the script refuses to start if
+they do not, because the failure is otherwise silent until the frontend calls a
+server that is not there. If you already run a standalone Speckle stack, it holds
+80, 5432, 6379 and 9000; the script names the container that holds each port
+rather than letting the bind fail.
+
+The Speckle in this stack starts **empty**. Projects you mirrored into a
+different Speckle instance live in that instance's volumes, not here.
+
+Two notes on how the images are built, both of which cost an afternoon to learn:
+
+- `./Dockerfile` is the boilerplate for a *published* package (`ph init` +
+  `ph install <name>`), and CI builds it. It cannot build this repo — its local
+  fallback copies `package.json` and never the source. `docker/Dockerfile.local`
+  builds the working tree instead, with a `switchboard` and a `connect` target.
+- The reactor loads a package by importing `<name>/document-models`,
+  `<name>/subgraphs` and `<name>/processors`. Those subpaths exist only in
+  `package.json`'s `exports`, and Node applies an `exports` map only to *bare*
+  specifiers — never to a path. So the project directory can never load under
+  plain node: `import("/app/document-models")` fails with
+  `ERR_UNSUPPORTED_DIR_IMPORT`, every loader gives up, and the switchboard boots
+  serving nothing, without an error. The image therefore runs `ph build` and
+  links the package into `node_modules` under its own name, then loads it via
+  `PH_PACKAGES`. The build asserts that all three subpaths resolve, so this
+  fails loudly at build time rather than quietly at boot.
+
 ### Credentials
 
 The token in the Sync Console lives in the document's **local scope**: private to

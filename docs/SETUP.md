@@ -170,12 +170,17 @@ npm ci
 npm run vetra -- --dev
 ```
 
-`ph vetra --dev` starts two things: Vetra Connect on <http://localhost:3001>
-— note the port, it is 3001 here and 3000 in the Docker stack — which is Connect
-with this package's editors loaded from source, and a switchboard on
-<http://localhost:4001> with the processors, the subgraphs and the MCP endpoint.
-It reloads when you edit the source, which is why this is the path to take when
-you are developing rather than demonstrating.
+`ph vetra --dev` starts two things: Vetra Connect on <http://localhost:3001>,
+which is Connect with this package's editors loaded from source, and a
+switchboard on <http://localhost:4001> with the processors, the subgraphs and
+the MCP endpoint. It reloads when you edit the source, which is why this is the
+path to take when you are developing rather than demonstrating.
+
+The port is 3001 here and 3000 in the Docker stack, and 3001 is not a fallback
+from a busy 3000: Vetra Connect's own default is 3001 (`ph`'s
+`DEFAULT_VETRA_CONNECT_PORT`), separate from the 3000 used by `ph connect` in
+studio mode. The `studio.port` setting in `powerhouse.config.json` configures
+that other one, so changing it does not move Vetra Connect.
 
 Storage is a local PGlite database under `.ph/`, not Postgres. Nothing else is
 needed.

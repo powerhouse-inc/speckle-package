@@ -23,6 +23,8 @@
  * wall would be counted twice, once as a wall and once as its own geometry.
  */
 
+import { createHash } from "node:crypto";
+
 /** Metres. Speckle records a unit per object and the mirror reads it. */
 const UNITS = "m";
 
@@ -299,4 +301,64 @@ export function expectations(project) {
   }
 
   return rows;
+}
+
+
+/**
+ * Turns a revision's elements into the flat set of objects Speckle stores.
+ *
+ * Every Speckle object is content-addressed: its `id` is a hash of what it
+ * contains, which is also why an id can never serve as an element's identity —
+ * that is `applicationId`'s job.
+ *
+ * Two rules here are not decoration, and getting either wrong breaks something
+ * that is hard to trace back:
+ *
+ * **Every object needs an id.** The viewer builds a world-tree node per object
+ * and reads `node.model.id`. A single object without one throws "can't access
+ * property includes, t.model.id is undefined" from deep inside the library, and
+ * the whole revision refuses to render.
+ *
+ * **Geometry is detached, not nested.** Speckle's own importer stores each mesh
+ * as its own object and puts a `reference` in `displayValue`. The mirror also
+ * depends on this: it reads a revision through the `children` query, which
+ * walks the root's `__closure`, and only listed descendants are reachable.
+ */
+export function flattenForUpload(elements) {
+  const objects = [];
+  const closure = {};
+
+  const hash = (object) =>
+    createHash("sha256").update(JSON.stringify(object)).digest("hex").slice(0, 32);
+
+  const store = (object, depth) => {
+    const id = hash(object);
+    const stored = { ...object, id };
+    objects.push(stored);
+    // Keep the shallowest depth if something is referenced twice.
+    closure[id] = Math.min(closure[id] ?? depth, depth);
+    return stored;
+  };
+
+  const references = [];
+
+  for (const entry of elements) {
+    const { displayValue, ...rest } = entry;
+
+    const geometry = (displayValue ?? []).map((mesh) => {
+      const stored = store(mesh, 2);
+      return { speckle_type: "reference", referencedId: stored.id };
+    });
+
+    const stored = store({ ...rest, displayValue: geometry }, 1);
+    references.push({ speckle_type: "reference", referencedId: stored.id });
+  }
+
+  const rootBody = {
+    speckle_type: "Base",
+    elements: references,
+    __closure: closure,
+  };
+
+  return { root: { ...rootBody, id: hash(rootBody) }, objects };
 }

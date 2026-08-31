@@ -56,12 +56,17 @@
  *    `setDriveName`.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
-import { DEMO_PROJECTS, buildRevisions, expectations } from "./seed-data.mjs";
+import {
+  DEMO_PROJECTS,
+  buildRevisions,
+  expectations,
+  flattenForUpload,
+} from "./seed-data.mjs";
 
 const run = promisify(execFile);
 
@@ -293,34 +298,20 @@ async function ensureToken(options) {
   return { ...options, token: minted.apiTokenCreate };
 }
 
-/** Speckle object ids are content hashes; a changed element gets a new id. */
-const hashOf = (object) =>
-  createHash("sha256").update(JSON.stringify(object)).digest("hex").slice(0, 32);
-
 /**
  * Uploads one revision and returns the root object id.
  *
- * The root object references its elements and repeats them in `__closure`.
- * That map is what makes them reachable through `project.object.children`,
- * which is how the mirror reads a version.
+ * The shape — every object with an id, geometry detached and referenced, all
+ * descendants in the root's `__closure` — is decided by flattenForUpload, which
+ * documents why each part matters.
  */
 async function uploadRevision(options, projectId, elements) {
-  const withIds = elements.map((entry) => ({ ...entry, id: hashOf(entry) }));
-
-  const rootBody = {
-    speckle_type: "Base",
-    elements: withIds.map((entry) => ({
-      speckle_type: "reference",
-      referencedId: entry.id,
-    })),
-    __closure: Object.fromEntries(withIds.map((entry) => [entry.id, 1])),
-  };
-  const root = { ...rootBody, id: hashOf(rootBody) };
+  const { root, objects } = flattenForUpload(elements);
 
   const form = new FormData();
   form.append(
     "batch-1",
-    new Blob([JSON.stringify([root, ...withIds])], { type: "application/json" }),
+    new Blob([JSON.stringify([root, ...objects])], { type: "application/json" }),
     "batch-1.json",
   );
 

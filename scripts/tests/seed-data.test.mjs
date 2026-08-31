@@ -6,6 +6,7 @@ import {
   DEMO_PROJECTS,
   element,
   expectations,
+  flattenForUpload,
 } from "../seed-data.mjs";
 
 describe("boxMesh", () => {
@@ -159,5 +160,57 @@ describe("the demo projects", () => {
       expect(rows.filter((row) => row.baseline)).toHaveLength(1);
       expect(rows[0].baseline).toBe(true);
     }
+  });
+});
+
+describe("flattenForUpload", () => {
+  const elements = [element("abutment", 1), element("deck", 1)];
+
+  it("gives every uploaded object an id", () => {
+    const { objects, root } = flattenForUpload(elements);
+
+    // The viewer builds a world-tree node per object and reads node.model.id.
+    // One object without an id throws "can't access property includes,
+    // t.model.id is undefined" and the revision will not render.
+    expect(root.id).toBeTruthy();
+    for (const object of objects) expect(object.id).toBeTruthy();
+  });
+
+  it("detaches geometry, the way Speckle's own importer does", () => {
+    const { objects } = flattenForUpload(elements);
+
+    const built = objects.filter((o) => o.speckle_type.startsWith("Objects.BuiltElements"));
+    const meshes = objects.filter((o) => o.speckle_type === "Objects.Geometry.Mesh");
+
+    expect(built).toHaveLength(2);
+    expect(meshes).toHaveLength(2);
+
+    // displayValue holds references, not the mesh itself.
+    for (const entry of built) {
+      expect(entry.displayValue[0].speckle_type).toBe("reference");
+      expect(meshes.some((m) => m.id === entry.displayValue[0].referencedId)).toBe(true);
+    }
+  });
+
+  it("lists every descendant in the root closure, which is how children are read", () => {
+    const { root, objects } = flattenForUpload(elements);
+
+    for (const object of objects) {
+      expect(root.__closure[object.id]).toBeGreaterThan(0);
+    }
+    // Elements sit one level down, their geometry two.
+    const mesh = objects.find((o) => o.speckle_type === "Objects.Geometry.Mesh");
+    const built = objects.find((o) => o.speckle_type.startsWith("Objects.BuiltElements"));
+    expect(root.__closure[built.id]).toBe(1);
+    expect(root.__closure[mesh.id]).toBe(2);
+  });
+
+  it("hashes content, so an unchanged element keeps its id and a grown one does not", () => {
+    const same = flattenForUpload([element("abutment", 1)]);
+    const again = flattenForUpload([element("abutment", 1)]);
+    const grown = flattenForUpload([element("abutment", 1, 1.25)]);
+
+    expect(same.root.id).toBe(again.root.id);
+    expect(grown.root.id).not.toBe(same.root.id);
   });
 });

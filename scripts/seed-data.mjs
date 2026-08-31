@@ -323,6 +323,13 @@ export function expectations(project) {
  * as its own object and puts a `reference` in `displayValue`. The mirror also
  * depends on this: it reads a revision through the `children` query, which
  * walks the root's `__closure`, and only listed descendants are reachable.
+ *
+ * **Every object with detached children carries its own closure**, not just the
+ * root. Speckle resolves an object's references through *that object's* closure,
+ * so an element loaded on its own — which the Model Explorer does for deleted
+ * elements, to show them in red — needs its geometry listed on itself. Without
+ * it the reference dangles, the load never completes, and the viewer sits on
+ * "loading from Speckle" over a scene that has already drawn.
  */
 export function flattenForUpload(elements) {
   const objects = [];
@@ -350,7 +357,21 @@ export function flattenForUpload(elements) {
       return { speckle_type: "reference", referencedId: stored.id };
     });
 
-    const stored = store({ ...rest, displayValue: geometry }, 1);
+    const stored = store(
+      {
+        ...rest,
+        displayValue: geometry,
+        // The element's own closure: its geometry, one level down.
+        ...(geometry.length > 0
+          ? {
+              __closure: Object.fromEntries(
+                geometry.map((reference) => [reference.referencedId, 1]),
+              ),
+            }
+          : {}),
+      },
+      1,
+    );
     references.push({ speckle_type: "reference", referencedId: stored.id });
   }
 

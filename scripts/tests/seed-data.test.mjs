@@ -214,3 +214,27 @@ describe("flattenForUpload", () => {
     expect(grown.root.id).not.toBe(same.root.id);
   });
 });
+
+describe("flattenForUpload — objects loadable on their own", () => {
+  it("gives each element its own closure, so it can be loaded by id", () => {
+    // The Model Explorer loads deleted elements one at a time, by object id, to
+    // show them in red beside what remains. Speckle resolves an object's
+    // detached children through *that object's* closure — with none, the
+    // geometry reference dangles, the load never completes, and the viewer sits
+    // on "loading" over an already-rendered scene. Speckle's own IFC importer
+    // writes a closure on every element for exactly this reason.
+    const { objects } = flattenForUpload([element("abutment", 1)]);
+
+    const built = objects.find((o) => o.speckle_type.startsWith("Objects.BuiltElements"));
+    const mesh = objects.find((o) => o.speckle_type === "Objects.Geometry.Mesh");
+
+    expect(built.__closure).toStrictEqual({ [mesh.id]: 1 });
+  });
+
+  it("leaves geometry itself without a closure — it has no children", () => {
+    const { objects } = flattenForUpload([element("deck", 1)]);
+    const mesh = objects.find((o) => o.speckle_type === "Objects.Geometry.Mesh");
+
+    expect(mesh.__closure).toBeUndefined();
+  });
+});

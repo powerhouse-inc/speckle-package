@@ -100,17 +100,39 @@ fi
 
 # Ports held by someone who is not us. The usual culprit is a standalone
 # Speckle stack, which binds 80, 5432, 6379 and 9000 — the same four.
-ours=$(docker compose ps --format '{{.Name}}' 2>/dev/null || true)
+#
+# Ownership is decided from the ports our own containers actually publish, not
+# by matching docker's human-readable port column: docker collapses adjacent
+# mappings into a range ("127.0.0.1:9000-9001->9000-9001/tcp"), so a literal
+# ":9000->" finds nothing and our own MinIO looks like a stranger.
+published_ports() { # container ids on stdin -> one host port per line
+    xargs -r docker inspect \
+        --format '{{range $p, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{.HostPort}}
+{{end}}{{end}}' 2>/dev/null | grep -E '^[0-9]+$' | sort -u
+}
+
+our_ports=$(docker compose ps -q 2>/dev/null | published_ports || true)
+
+# Names the container holding a port, ranges included.
+holder_of() {
+    docker ps -q 2>/dev/null | xargs -r docker inspect \
+        --format '{{$name := .Name}}{{range $p, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{$name}} {{.HostPort}}
+{{end}}{{end}}' 2>/dev/null | awk -v p="$1" '$2 == p { print substr($1, 2); exit }'
+}
+
 busy=()
 for entry in "SPECKLE_PORT:$SPECKLE_PORT" "CONNECT_PORT:$CONNECT_PORT" \
     "SWITCHBOARD_PORT:$SWITCHBOARD_PORT" "POSTGRES_PORT:$POSTGRES_PORT" \
     "REDIS_PORT:$REDIS_PORT" "MINIO_PORT:$MINIO_PORT"; do
     name=${entry%%:*} port=${entry##*:}
-    holder=$(docker ps --format '{{.Names}}\t{{.Ports}}' | awk -v p=":$port->" '$0 ~ p {print $1; exit}')
+
+    # Our own container from a previous run: `up -d` reuses it.
+    if printf '%s\n' "$our_ports" | grep -qx "$port"; then
+        continue
+    fi
+
+    holder=$(holder_of "$port")
     if [ -n "$holder" ]; then
-        case "$ours" in
-            *"$holder"*) continue ;; # our own container from a previous run
-        esac
         busy+=("$port is held by the container '$holder' (\$$name)")
     elif command -v ss >/dev/null 2>&1 && ss -ltnH "sport = :$port" | grep -q .; then
         busy+=("$port is held by a process on the host (\$$name)")
@@ -160,9 +182,29 @@ wait_for() {
     return 1
 }
 
+# Speckle's frontend answers well before its API does, and a seed script that
+# starts too early gets a 404 from /auth. So ask the API itself.
+wait_for_speckle_api() {
+    local url=$1 timeout=$2 waited=0
+    printf '    %-28s' "Speckle API"
+    while [ "$waited" -lt "$timeout" ]; do
+        if curl -fsS -o /dev/null --max-time 5 -X POST "$url/graphql" \
+            -H 'content-type: application/json' \
+            -d '{"query":"{serverInfo{version}}"}' 2>/dev/null; then
+            printf '\033[1;32mready\033[0m (%ss)\n' "$waited"
+            return 0
+        fi
+        sleep 3
+        waited=$((waited + 3))
+    done
+    printf '\033[1;31mnot ready after %ss\033[0m\n' "$timeout"
+    return 1
+}
+
 say "Waiting for the services to come up."
 failed=0
 wait_for "Speckle" "http://127.0.0.1:${SPECKLE_PORT}/" 300 || failed=1
+wait_for_speckle_api "http://127.0.0.1:${SPECKLE_PORT}" 300 || failed=1
 wait_for "Switchboard" "http://127.0.0.1:${SWITCHBOARD_PORT}/health" 240 || failed=1
 wait_for "Connect" "http://127.0.0.1:${CONNECT_PORT}/health" 120 || failed=1
 
@@ -187,14 +229,14 @@ INFO
 
 if ! grep -q '^SPECKLE_TOKEN=..' .env; then
     cat <<'NEXT'
-  Two steps no script can do for you:
+  Speckle is empty. To fill it with the demo — two projects with three months of
+  revisions, plus a real IFC import, all mirrored into Powerhouse:
 
-    1. Register an account in Speckle (the first one is yours; local strategy,
-       no email confirmation needed).
-    2. Profile -> Access Tokens -> create one with streams:read and users:read,
-       put it in .env as SPECKLE_TOKEN, then:  docker compose up -d switchboard
+    node scripts/seed.mjs
 
-  Until then the sync runner can only read public projects.
+  That registers a Speckle account and mints its own token, so there is nothing
+  to click. It prints the credentials; put the token in .env as SPECKLE_TOKEN if
+  you later want the runner to read private projects.
 
 NEXT
 fi

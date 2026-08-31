@@ -1,9 +1,9 @@
 # Setup
 
-This walks from an empty machine to a demo you can click through: two building
-projects in Speckle with three months of revision history, mirrored into
-Powerhouse documents, with mass development, change activity and hot-spot
-elements coming out of the analytics.
+This walks from an empty machine to a demo you can click through: three building
+projects in Speckle — two with three months of revision history, one imported
+from a real IFC file — mirrored into Powerhouse documents, with mass
+development, change activity and hot-spot elements coming out of the analytics.
 
 There are two ways to run it. Take the first unless you have a reason not to.
 
@@ -56,9 +56,9 @@ node scripts/seed.mjs
 ```
 
 One command, no clicks. It registers a Speckle account, mints an access token,
-creates the two projects with their revisions, moves the revision dates into
-June–August, then creates the Powerhouse drive, the mirrors and the sync jobs
-and waits for them to finish. It prints the account it created, the token, a
+creates the two generated projects with their revisions, imports the sample IFC
+as a third, moves the revision dates into June–August, then creates the
+Powerhouse drive, the mirrors and the sync jobs and waits for them to finish. It prints the account it created, the token, a
 table of what the demo should now show, and the link to open.
 
 Read `scripts/seed.mjs` if you want to know *why* each step is the way it is —
@@ -128,20 +128,32 @@ docker compose logs -f switchboard
 at a clean demo in a few minutes. That is the fastest way out of a confusing
 state.
 
-### Adding a real IFC file
+### The third project: a real IFC
 
-The seed script builds its geometry in code. To use a real model, upload the IFC
-in Speckle's web UI (a project's *Import file*), wait for the import to finish,
-copy the project id out of the URL, and mirror it:
+Besides the two generated projects, the seed imports a real IFC file —
+`samples/Duplex_A_20110907.ifc.gz`, a small two-storey residential building
+published under CC BY 4.0 (see `samples/NOTICE.md`). It goes through Speckle's
+own importer, so the demo covers the second data shape the package has to read:
+imported objects are typed `Objects.Data.DataObject` with the real class in
+`ifcType`, and quantities live under `properties.Quantities.BaseQuantities`.
+
+Two honest limits on this project. A file import produces exactly **one**
+version, so it has masses and categories but no change history — nothing to
+diff against. And its **mass columns stay empty**, because this particular
+export carries no element quantities at all: its only quantity sets are "GSA
+Space Areas" on `IfcSpace`, not the standard `BaseQuantities` on elements. The
+categories come through in full — 56 `IfcWallStandardCase`, 24 `IfcWindow`, 21
+`IfcSlab`, 14 `IfcDoor` and ten more classes — which is what makes it worth
+having. Many real exports are like this; it is worth knowing before a client
+asks why the tonnage is blank.
+
+Skip it with `--no-ifc`, or use your own model with `--ifc <path>` (plain or
+gzipped). To mirror something already sitting in Speckle — an IFC you uploaded
+through the web UI, say — copy the project id out of its URL:
 
 ```bash
 node scripts/seed.mjs --only powerhouse --mirror <project-id> --drive <drive-id>
 ```
-
-The mirror reads IFC-imported models slightly differently — Speckle types every
-imported object as `Objects.Data.DataObject` and puts the real class in
-`ifcType`, with quantities under `properties.Quantities.BaseQuantities` — and the
-package handles both shapes. See the notes at the end of the README.
 
 ## Without Docker
 

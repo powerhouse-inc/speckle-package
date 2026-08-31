@@ -8,6 +8,7 @@ import {
   type OperationWithContext,
 } from "@powerhousedao/reactor-browser";
 import { DateTime } from "luxon";
+import { Coalescer } from "./coalesce.js";
 import { up } from "./migrations.js";
 import type { DB } from "./schema.js";
 import {
@@ -44,17 +45,18 @@ export const ANALYTICS_NAMESPACE_KEY = "speckle-analytics";
  */
 export class SpeckleAnalytics extends RelationalDbProcessor<DB> {
   /**
-   * Rebuilds in flight, per document.
+   * Rebuilds, serialised per document.
    *
    * Every rebuild is total — clear the source, then write it whole — so two of
-   * them overlapping for the same document interleaves a clear with a write and
-   * leaves duplicated series behind. Backfilling replays many batches in quick
-   * succession, which makes that overlap the normal case rather than a rare one.
-   * So rebuilds are serialised per document, and because each one supersedes the
-   * last, a burst collapses into a single rerun.
+   * them overlapping for the same document interleaves a clear with a write.
+   * Backfilling replays many batches in quick succession, which makes that
+   * overlap the normal case rather than a rare one. Because each rebuild
+   * supersedes the last, a burst collapses into a single rerun; the Coalescer
+   * guarantees the *last* state in a burst is never the one that gets dropped.
    */
-  private readonly running = new Map<string, Promise<void>>();
-  private readonly pending = new Map<string, ProjectStateLike>();
+  private readonly rebuilds = new Coalescer<ProjectStateLike>((documentId, state) =>
+    this.rebuild(documentId, state),
+  );
 
   constructor(
     namespace: string,
@@ -87,39 +89,10 @@ export class SpeckleAnalytics extends RelationalDbProcessor<DB> {
     for (const [documentId, serialised] of latest) {
       const state = this.parseState(serialised);
 
-      if (state) waits.push(this.schedule(documentId, state));
+      if (state) waits.push(this.rebuilds.submit(documentId, state));
     }
 
     await Promise.all(waits);
-  }
-
-  /** Runs a rebuild, or queues the newest state behind the one in flight. */
-  private schedule(documentId: string, state: ProjectStateLike): Promise<void> {
-    const inFlight = this.running.get(documentId);
-
-    if (inFlight) {
-      // Only the newest state matters: it already contains everything earlier
-      // states did.
-      this.pending.set(documentId, state);
-      return inFlight;
-    }
-
-    const run = (async () => {
-      let next: ProjectStateLike | undefined = state;
-
-      while (next) {
-        await this.rebuild(documentId, next);
-
-        next = this.pending.get(documentId);
-        this.pending.delete(documentId);
-      }
-    })().finally(() => {
-      this.running.delete(documentId);
-    });
-
-    this.running.set(documentId, run);
-
-    return run;
   }
 
   async onDisconnect(): Promise<void> {
@@ -157,7 +130,20 @@ export class SpeckleAnalytics extends RelationalDbProcessor<DB> {
     const source = AnalyticsPath.fromString(sourceFor(documentId));
 
     try {
-      await this.analyticsStore.clearSeriesBySource(source, true);
+      // Scoped to our own source, and deliberately without the
+      // `cleanUpDimensions` flag. That flag runs a *global* delete of every
+      // AnalyticsDimension row no series references yet — and the engine links
+      // dimensions in two steps: it selects the ids it needs, then inserts the
+      // join rows, with awaits in between. A cleanup fired by one document in
+      // that window deletes the ids another document just read, and the insert
+      // dies on a foreign key violation. The reactor then marks the processor
+      // failed and stops delivering to it, so the read model freezes at
+      // whatever was written last and every later query answers, confidently,
+      // with stale numbers.
+      //
+      // Orphaned dimension rows are harmless: they are path strings, reused by
+      // path on the next write, bounded by the set of paths we ever emit.
+      await this.analyticsStore.clearSeriesBySource(source);
     } catch (error) {
       // A source that was never written cannot be cleared; that is not a
       // failure, and the rewrite below is what matters.

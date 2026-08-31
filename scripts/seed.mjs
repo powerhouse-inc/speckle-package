@@ -7,6 +7,7 @@
  *
  *   node scripts/seed.mjs                        # everything, local Docker stack
  *   node scripts/seed.mjs --only powerhouse      # skip Speckle, mirror what is there
+ *   node scripts/seed.mjs --no-ifc               # skip the IFC import
  *   node scripts/seed.mjs --mirror ad9d45dd0b    # also mirror an existing project
  *   node scripts/seed.mjs --help
  *
@@ -14,7 +15,7 @@
  * time rather than trying to reconcile with what exists. Nothing is deleted.
  *
  * ---------------------------------------------------------------------------
- * Four things in here are not obvious, and each one cost real time to find out.
+ * Five things in here are not obvious, and each one cost real time to find out.
  * ---------------------------------------------------------------------------
  *
  * 1. **No clicking required.** A fresh Speckle has no account and no token, and
@@ -39,7 +40,14 @@
  *    `docker compose exec postgres psql`. That only works for the local Docker
  *    Speckle; against any other server the step is skipped and said out loud.
  *
- * 4. **A drive needs its editor set at creation.** Connect picks the drive app
+ * 4. **S3 wants its ETag quoted.** The IFC upload is three calls —
+ *    generateUploadUrl, a PUT to the presigned URL, then startFileImport — and
+ *    the last one hands back the ETag the PUT returned. It must be passed
+ *    *including* the surrounding quotes, exactly as S3 wrote them. Stripping
+ *    them fails with "ETag mismatch: expected <the very value you sent>",
+ *    which reads like a server bug and is not one.
+ *
+ * 5. **A drive needs its editor set at creation.** Connect picks the drive app
  *    from the drive header's `meta.preferredEditor`, and falls back to the
  *    generic "Drive Explorer App" without explaining itself. The
  *    `createDocument` mutation takes `preferredEditor` and sets it properly —
@@ -50,6 +58,8 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { gunzipSync } from "node:zlib";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { DEMO_PROJECTS, buildRevisions, expectations } from "./seed-data.mjs";
 
@@ -71,6 +81,9 @@ Seed the Speckle x Powerhouse demo.
   --only powerhouse     Skip Speckle; mirror projects named with --mirror
   --mirror <id>         Also mirror an existing Speckle project id.
                         Repeatable. Use this for a real IFC you uploaded.
+  --ifc <path>          IFC file to import (.ifc or .ifc.gz)
+                        (default samples/Duplex_A_20110907.ifc.gz)
+  --no-ifc              Skip the IFC project
   --no-backdate         Leave version dates at today
   --drive <id>          Add to an existing drive instead of creating one
   --help
@@ -85,6 +98,7 @@ function parseOptions(argv) {
     mirror: [],
     backdate: true,
     drive: null,
+    ifc: "samples/Duplex_A_20110907.ifc.gz",
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -103,6 +117,8 @@ function parseOptions(argv) {
       case "--only": options.only = value(); break;
       case "--mirror": options.mirror.push(value()); break;
       case "--drive": options.drive = value(); break;
+      case "--ifc": options.ifc = value(); break;
+      case "--no-ifc": options.ifc = null; break;
       case "--no-backdate": options.backdate = false; break;
       case "--help": case "-h": console.log(HELP); process.exit(0); break;
       default: fail(`unknown option ${argument} (try --help)`);
@@ -153,6 +169,49 @@ async function speckleGraphql(options, query, variables, token = options.token) 
   if (body.errors) fail(`Speckle rejected a call: ${JSON.stringify(body.errors).slice(0, 400)}`);
 
   return body.data;
+}
+
+/**
+ * Waits until Speckle's API answers.
+ *
+ * Its frontend comes up well before the server has finished migrating, and a
+ * seed that starts in that window gets a 404 from /auth — which reads like
+ * "registration is disabled" and is really "not yet". So ask the API a trivial
+ * question until it replies.
+ */
+async function waitForSpeckle(options, timeoutMs = 300_000) {
+  const deadline = Date.now() + timeoutMs;
+  let announced = false;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${options.speckle}/graphql`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: "{ serverInfo { version } }" }),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (response.ok) {
+        const body = await response.json();
+        if (body.data?.serverInfo) {
+          if (announced) note(`Speckle ${body.data.serverInfo.version} is up.`);
+          return;
+        }
+      }
+    } catch {
+      // Not up yet; that is what the loop is for.
+    }
+
+    if (!announced) {
+      step(`Waiting for Speckle at ${options.speckle}`);
+      announced = true;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+
+  fail(`Speckle at ${options.speckle} did not answer within ${timeoutMs / 1000}s.`);
 }
 
 /**
@@ -340,6 +399,128 @@ async function seedSpeckle(options) {
   }
 
   return created;
+}
+
+/**
+ * The date the imported IFC lands on.
+ *
+ * After both generated projects, so the portfolio charts also show the case a
+ * client cares about: a project joining an existing portfolio partway through.
+ */
+const IFC_DATE = "2026-08-24T10:30:00Z";
+
+/**
+ * Imports a real IFC file, as a third project.
+ *
+ * Worth having because Speckle's IFC importer produces a different shape from
+ * a native connector — objects typed `Objects.Data.DataObject` with the real
+ * class in `ifcType`, quantities under `properties.Quantities.BaseQuantities` —
+ * and the mirror reads both. Generated geometry cannot exercise that path.
+ *
+ * A file import produces exactly one version, so this project has masses and
+ * categories but no change history. That is a property of file imports, not a
+ * shortcoming of the seed.
+ */
+async function seedIfc(options) {
+  step(`Speckle: importing ${options.ifc}`);
+
+  let bytes;
+  try {
+    bytes = await readFile(options.ifc);
+  } catch {
+    warn(`Cannot read ${options.ifc} — skipping the IFC project.`);
+    return null;
+  }
+
+  // Stored gzipped so a 2.4 MB sample costs 450 KB in the repository.
+  if (options.ifc.endsWith(".gz")) bytes = gunzipSync(bytes);
+
+  const fileName = options.ifc.split("/").pop().replace(/\.gz$/, "");
+  const name = "Duplex Apartment (IFC import)";
+
+  const { projectMutations } = await speckleGraphql(
+    options,
+    `mutation($input: ProjectCreateInput) {
+       projectMutations { create(input: $input) { id } }
+     }`,
+    {
+      input: {
+        name,
+        description: "Imported from a real IFC file. Seeded demo data.",
+        visibility: "PUBLIC",
+      },
+    },
+  );
+  const projectId = projectMutations.create.id;
+
+  const { modelMutations } = await speckleGraphql(
+    options,
+    `mutation($input: CreateModelInput!) {
+       modelMutations { create(input: $input) { id } }
+     }`,
+    { input: { projectId, name: "ifc/duplex" } },
+  );
+  const modelId = modelMutations.create.id;
+
+  const { fileUploadMutations } = await speckleGraphql(
+    options,
+    `mutation($input: GenerateFileUploadUrlInput!) {
+       fileUploadMutations { generateUploadUrl(input: $input) { url fileId } }
+     }`,
+    { input: { projectId, fileName } },
+  );
+  const { url, fileId } = fileUploadMutations.generateUploadUrl;
+
+  const upload = await fetch(url, { method: "PUT", body: bytes });
+  if (!upload.ok) fail(`Uploading the IFC to storage failed with ${upload.status}.`);
+
+  // Quotes included, deliberately — see note 4 at the top of the file.
+  const etag = upload.headers.get("etag");
+  if (!etag) fail("Storage returned no ETag, which startFileImport requires.");
+
+  await speckleGraphql(
+    options,
+    `mutation($input: StartFileImportInput!) {
+       fileUploadMutations { startFileImport(input: $input) { id convertedStatus } }
+     }`,
+    { input: { projectId, modelId, fileId, etag } },
+  );
+
+  note(`${(bytes.length / 1048576).toFixed(1)} MB uploaded, import queued.`);
+
+  // The importer is a separate service working off a queue, so this waits for
+  // a version to exist rather than assuming one does.
+  const deadline = Date.now() + 300_000;
+  while (Date.now() < deadline) {
+    const data = await speckleGraphql(
+      options,
+      `query($projectId: String!, $modelId: String!) {
+         project(id: $projectId) {
+           model(id: $modelId) {
+             versions(limit: 1) { totalCount items { id message } }
+           }
+         }
+       }`,
+      { projectId, modelId },
+    );
+
+    const versions = data.project.model.versions;
+    if (versions.totalCount > 0) {
+      note(`imported: ${versions.items[0].message}`);
+      note(`project id: ${projectId}`);
+      return {
+        name,
+        projectId,
+        versions: [{ id: versions.items[0].id, date: IFC_DATE }],
+      };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+
+  warn("The IFC import did not finish within 5 minutes.");
+  warn("Check the importer: docker compose logs ifc-import-server");
+  return null;
 }
 
 /**
@@ -552,10 +733,19 @@ async function main() {
   let projects = [];
 
   if (options.only !== "powerhouse") {
+    await waitForSpeckle(options);
     options = await ensureToken(options);
     projects = await seedSpeckle(options);
+
+    if (options.ifc) {
+      const imported = await seedIfc(options);
+      if (imported) projects.push(imported);
+    }
+
     if (options.backdate) await backdate(options, projects);
   }
+
+  if (options.mirror.length > 0) await waitForSpeckle(options);
 
   for (const projectId of options.mirror) {
     // Ask Speckle what it is called rather than labelling it with its id.
@@ -608,6 +798,17 @@ async function main() {
         `    ${row.date}   ${String(row.elements).padStart(6)}   ${String(row.volume).padStart(9)}${change}`,
       );
     }
+  }
+
+  // The imported project has no plan to predict, and one thing about it is
+  // surprising enough to say out loud rather than let someone discover it.
+  if (projects.some((entry) => !entry.plan && entry.name.includes("IFC"))) {
+    console.log(`
+  Duplex Apartment (IFC import) — one version, so no change history.
+    Its mass columns are empty because that export carries no element
+    quantities, only GSA space areas on IfcSpace. Categories come through
+    in full: 56 IfcWallStandardCase, 24 IfcWindow, 21 IfcSlab, 14 IfcDoor
+    and ten more classes. See samples/NOTICE.md.`);
   }
 
   const driveUrl = `${options.switchboard}/d/${driveId}`;

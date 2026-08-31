@@ -198,6 +198,11 @@ writes did not land.
 
 ## Running it
 
+For a walk-through from an empty machine — with Docker or without, plus the seed
+script that builds the whole demo in one command — see **[docs/SETUP.md](docs/SETUP.md)**.
+
+The short version for developing on it:
+
 ```bash
 ph vetra --dev            # Vetra Studio + local Switchboard
 npm run tsc              # types
@@ -205,7 +210,13 @@ npm run lint:fix         # oxlint, type-aware
 npm run test:coverage    # reducers must stay ≥95 % on every metric
 ```
 
-Then, in Vetra Studio:
+Then either seed the demo,
+
+```bash
+node scripts/seed.mjs     # two Speckle projects, mirrors, syncs, in one go
+```
+
+or do it by hand in Vetra Studio:
 
 1. Open the drive — the **Speckle Workspace** drive app is the entry point.
 2. **+ Mirror** creates a `speckle/project` document, **+ Sync** a `speckle/sync`.

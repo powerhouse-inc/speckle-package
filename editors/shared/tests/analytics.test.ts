@@ -6,6 +6,7 @@ import {
   leafOf,
   stackByDimension,
   subgraphUrl,
+  switchboardBase,
   unitFor,
   type SeriesPeriod,
   type SeriesRow,
@@ -55,26 +56,100 @@ function periods(): SeriesPeriod[] {
 }
 
 describe("subgraphUrl", () => {
-  it("recovers the base from whatever url the editor knows", () => {
-    expect(subgraphUrl("http://localhost:4001", "analytics")).toBe(
-      "http://localhost:4001/graphql/analytics",
+  it("puts the subgraph under the base it is given", () => {
+    expect(subgraphUrl("http://localhost:4011", "analytics")).toBe(
+      "http://localhost:4011/graphql/analytics",
     );
-    expect(subgraphUrl("http://localhost:4001/", "analytics")).toBe(
-      "http://localhost:4001/graphql/analytics",
+    expect(subgraphUrl("http://localhost:4011", "speckle-hotspots")).toBe(
+      "http://localhost:4011/graphql/speckle-hotspots",
     );
-    expect(subgraphUrl("http://localhost:4001/graphql", "analytics")).toBe(
-      "http://localhost:4001/graphql/analytics",
+  });
+});
+
+describe("switchboardBase", () => {
+  it("prefers what the host configured", () => {
+    expect(
+      switchboardBase({
+        configured: "http://switchboard.internal:3000",
+        search: "?driveUrl=http%3A%2F%2Flocalhost%3A4011%2Fd%2Fabc",
+      }),
+    ).toBe("http://switchboard.internal:3000");
+  });
+
+  it("recovers the base from a drive url, however it is shaped", () => {
+    expect(switchboardBase({ configured: "http://localhost:4011/d/abc-123" })).toBe(
+      "http://localhost:4011",
     );
-    // A drive url is the common case in an editor.
-    expect(subgraphUrl("http://localhost:4001/d/abc-123", "speckle-hotspots")).toBe(
-      "http://localhost:4001/graphql/speckle-hotspots",
+    expect(switchboardBase({ configured: "http://localhost:4011/graphql" })).toBe(
+      "http://localhost:4011",
+    );
+    expect(
+      switchboardBase({ configured: "http://localhost:4011/graphql/analytics" }),
+    ).toBe("http://localhost:4011");
+    expect(switchboardBase({ configured: "http://localhost:4011/" })).toBe(
+      "http://localhost:4011",
     );
   });
 
-  it("falls back to the local switchboard", () => {
-    expect(subgraphUrl(undefined, "analytics")).toBe(
-      "http://localhost:4001/graphql/analytics",
-    );
+  it("reads the driveUrl parameter Connect was opened with", () => {
+    // The link the seed script prints, and how Connect itself finds the drive.
+    expect(
+      switchboardBase({
+        search: "?driveUrl=http%3A%2F%2Flocalhost%3A4011%2Fd%2F49e309cf",
+      }),
+    ).toBe("http://localhost:4011");
+  });
+
+  it("falls back to a drive's own remote url", () => {
+    expect(
+      switchboardBase({ driveUrl: "http://reactor.example.com/d/xyz" }),
+    ).toBe("http://reactor.example.com");
+  });
+
+  it("returns null rather than guessing a port", () => {
+    // The bug this replaces: a hardcoded http://localhost:4001 meant the charts
+    // queried whatever happened to be on that port — answering with an empty
+    // series and no error, so they simply drew nothing.
+    expect(switchboardBase({})).toBeNull();
+    expect(switchboardBase({ configured: null, search: "", driveUrl: null })).toBeNull();
+    expect(switchboardBase({ search: "?foo=bar" })).toBeNull();
+  });
+
+  it("ignores values that are not absolute http urls", () => {
+    expect(switchboardBase({ configured: "not a url" })).toBeNull();
+    expect(switchboardBase({ configured: "/d/abc" })).toBeNull();
+    expect(switchboardBase({ search: "?driveUrl=%2Fd%2Fabc" })).toBeNull();
+  });
+
+  it("survives a malformed query string", () => {
+    expect(switchboardBase({ search: "?driveUrl=%E0%A4%A" })).toBeNull();
+  });
+
+  it("uses the address remembered from an earlier load", () => {
+    // Connect may rewrite the address bar after it has the drive, leaving an
+    // editor that mounts later with no parameter to read.
+    expect(
+      switchboardBase({ search: "?node=abc", remembered: "http://localhost:4011" }),
+    ).toBe("http://localhost:4011");
+  });
+
+  it("prefers the current parameter over a remembered one", () => {
+    expect(
+      switchboardBase({
+        search: "?driveUrl=http%3A%2F%2Flocalhost%3A4011%2Fd%2Fabc",
+        remembered: "http://stale.example.com",
+      }),
+    ).toBe("http://localhost:4011");
+  });
+
+  it("takes the first source that yields a usable base", () => {
+    expect(
+      switchboardBase({
+        configured: "not a url",
+        search: "?driveUrl=http%3A%2F%2Flocalhost%3A4011%2Fd%2Fabc",
+        driveUrl: "http://never.example.com/d/abc",
+      }),
+    ).toBe("http://localhost:4011");
   });
 });
 

@@ -111,20 +111,86 @@ const HOTSPOTS_QUERY = `
   }
 `;
 
+/** Switchboard serves each subgraph under its own path below the base. */
+export function subgraphUrl(base: string, subgraph: string): string {
+  return `${base}/graphql/${subgraph}`;
+}
+
 /**
- * Switchboard serves each subgraph under its own path, and the URL an editor
- * knows may point at a drive, so the base has to be recovered from it.
+ * Strips whatever path an editor happens to know down to the server root.
+ *
+ * The URL at hand may point at a drive (`/d/<id>`), at the supergraph
+ * (`/graphql`) or at one subgraph (`/graphql/analytics`). Anything that is not
+ * an absolute http(s) URL is rejected rather than repaired: a relative path
+ * cannot tell us which host to ask.
  */
-export function subgraphUrl(
-  switchboardUrl: string | undefined,
-  subgraph: string,
-): string {
-  const base = (switchboardUrl ?? "http://localhost:4001")
+function normaliseBase(value: string | null | undefined): string | null {
+  if (!value) return null;
+
+  const trimmed = value.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+
+  const base = trimmed
     .replace(/\/graphql.*$/, "")
     .replace(/\/d\/[^/]*$/, "")
     .replace(/\/+$/, "");
 
-  return `${base}/graphql/${subgraph}`;
+  return base.length > 0 ? base : null;
+}
+
+/** The `driveUrl` parameter Connect is opened with, if there is one. */
+function driveUrlFromSearch(search: string | null | undefined): string | null {
+  if (!search) return null;
+
+  try {
+    // URLSearchParams decodes for us; decoding again would corrupt the value.
+    return new URLSearchParams(search).get("driveUrl");
+  } catch {
+    // A malformed query string is not worth throwing over.
+    return null;
+  }
+}
+
+/**
+ * Where Switchboard is — worked out, not assumed.
+ *
+ * This used to fall back to a hardcoded `http://localhost:4001`, which is a
+ * silent trap: whatever else is listening on that port answers, an analytics
+ * query against the wrong reactor returns an empty series rather than an
+ * error, and the charts draw nothing while looking perfectly healthy. A
+ * different port — or another project's dev server on the usual one — was
+ * enough to empty the whole dashboard with no clue as to why.
+ *
+ * So the address is derived from what is actually known, in order:
+ *
+ * 1. what the host configured (`useSwitchboardUrl`) — the Vetra path;
+ * 2. the `driveUrl` parameter Connect was opened with, which is how Connect
+ *    itself finds the drive and therefore names the right server;
+ * 3. that same parameter as remembered earlier in this tab, since Connect may
+ *    rewrite the address bar once it has the drive;
+ * 4. the drive's own remote URL, for a drive added by hand.
+ *
+ * When none of those is usable it returns null, and the caller says so.
+ */
+export function switchboardBase(sources: {
+  configured?: string | null;
+  search?: string | null;
+  remembered?: string | null;
+  driveUrl?: string | null;
+}): string | null {
+  const candidates = [
+    sources.configured,
+    driveUrlFromSearch(sources.search),
+    sources.remembered,
+    sources.driveUrl,
+  ];
+
+  for (const candidate of candidates) {
+    const base = normaliseBase(candidate);
+    if (base) return base;
+  }
+
+  return null;
 }
 
 async function post<T>(
@@ -159,11 +225,11 @@ async function post<T>(
 }
 
 export async function fetchSeries(
-  switchboardUrl: string | undefined,
+  base: string,
   query: SeriesQuery,
 ): Promise<SeriesPeriod[]> {
   const data = await post<{ analytics: { series: SeriesPeriod[] | null } }>(
-    subgraphUrl(switchboardUrl, "analytics"),
+    subgraphUrl(base, "analytics"),
     SERIES_QUERY,
     { filter: query },
   );
@@ -172,14 +238,14 @@ export async function fetchSeries(
 }
 
 export async function fetchHotspots(
-  switchboardUrl: string | undefined,
+  base: string,
   projectDocumentId: string,
   minTouches = 2,
   limit = 20,
 ): Promise<Hotspot[]> {
   const data = await post<{
     speckleHotspots: { hotspots: Hotspot[] | null };
-  }>(subgraphUrl(switchboardUrl, "speckle-hotspots"), HOTSPOTS_QUERY, {
+  }>(subgraphUrl(base, "speckle-hotspots"), HOTSPOTS_QUERY, {
     projectDocumentId,
     minTouches,
     limit,

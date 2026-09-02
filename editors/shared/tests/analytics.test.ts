@@ -67,13 +67,23 @@ describe("subgraphUrl", () => {
 });
 
 describe("switchboardBase", () => {
-  it("prefers what the host configured", () => {
+  it("prefers the drive the user opened over any configured value", () => {
+    // Connect ships DEFAULT_SWITCHBOARD_URL = http://localhost:4001/graphql, so
+    // the configured value is never absent. Preferring it sent the analytics to
+    // whatever sat on port 4001 — an empty series, no error, blank charts.
     expect(
       switchboardBase({
-        configured: "http://switchboard.internal:3000",
+        configured: "http://localhost:4001/graphql",
         search: "?driveUrl=http%3A%2F%2Flocalhost%3A4011%2Fd%2Fabc",
       }),
-    ).toBe("http://switchboard.internal:3000");
+    ).toBe("http://localhost:4011");
+  });
+
+  it("uses the configured value when nothing names a drive", () => {
+    // The ph vetra path: the host sets a real address and there is no parameter.
+    expect(switchboardBase({ configured: "http://localhost:4001/graphql" })).toBe(
+      "http://localhost:4001",
+    );
   });
 
   it("recovers the base from a drive url, however it is shaped", () => {
@@ -145,7 +155,7 @@ describe("switchboardBase", () => {
   it("takes the first source that yields a usable base", () => {
     expect(
       switchboardBase({
-        configured: "not a url",
+        configured: "http://last.example.com",
         search: "?driveUrl=http%3A%2F%2Flocalhost%3A4011%2Fd%2Fabc",
         driveUrl: "http://never.example.com/d/abc",
       }),

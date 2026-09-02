@@ -163,12 +163,20 @@ function driveUrlFromSearch(search: string | null | undefined): string | null {
  *
  * So the address is derived from what is actually known, in order:
  *
- * 1. what the host configured (`useSwitchboardUrl`) — the Vetra path;
- * 2. the `driveUrl` parameter Connect was opened with, which is how Connect
- *    itself finds the drive and therefore names the right server;
- * 3. that same parameter as remembered earlier in this tab, since Connect may
+ * 1. the `driveUrl` parameter Connect was opened with — the drive the user
+ *    actually chose, and therefore the reactor that holds its analytics;
+ * 2. that same parameter as remembered earlier in this tab, since Connect may
  *    rewrite the address bar once it has the drive;
- * 4. the drive's own remote URL, for a drive added by hand.
+ * 3. the drive's own remote URL, for a drive added by hand;
+ * 4. only then what the host configured (`useSwitchboardUrl`).
+ *
+ * Configuration comes *last* on purpose. Connect ships a default of
+ * `http://localhost:4001/graphql`, so that value is never absent and cannot be
+ * read as knowledge — preferring it re-creates the very bug this function
+ * replaced, just with a library's guess instead of mine. Where the config is
+ * genuinely right, as under `ph vetra`, no drive parameter exists and it wins
+ * anyway. Where a drive parameter does exist, it names the server being looked
+ * at, which beats any default.
  *
  * When none of those is usable it returns null, and the caller says so.
  */
@@ -179,10 +187,10 @@ export function switchboardBase(sources: {
   driveUrl?: string | null;
 }): string | null {
   const candidates = [
-    sources.configured,
     driveUrlFromSearch(sources.search),
     sources.remembered,
     sources.driveUrl,
+    sources.configured,
   ];
 
   for (const candidate of candidates) {

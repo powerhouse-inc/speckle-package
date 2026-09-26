@@ -262,6 +262,31 @@ export async function fetchHotspots(
   return data.speckleHotspots.hotspots ?? [];
 }
 
+const SPECKLE_SERVER_QUERY = `
+  query SpeckleServer {
+    speckleServer {
+      publicOrigin
+    }
+  }
+`;
+
+/**
+ * The Speckle server the reactor is paired with, as the browser reaches it.
+ *
+ * Null when the reactor has none configured. A reactor without this package's
+ * `speckle-server` subgraph makes the request fail, which callers treat the
+ * same as null.
+ */
+export async function fetchSpecklePublicOrigin(
+  base: string,
+): Promise<string | null> {
+  const data = await post<{
+    speckleServer: { publicOrigin: string | null } | null;
+  }>(subgraphUrl(base, "speckle-server"), SPECKLE_SERVER_QUERY, {});
+
+  return data.speckleServer?.publicOrigin ?? null;
+}
+
 /* -------------------------------------------------------------- reshaping */
 
 /**

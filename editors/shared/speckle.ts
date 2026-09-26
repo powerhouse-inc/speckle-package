@@ -15,13 +15,65 @@ export interface SpeckleObjectLike {
 const BASE_STORAGE_KEY = "speckle-package:server-base";
 export const DEFAULT_SPECKLE_BASE = "http://127.0.0.1";
 
+/** An absolute http(s) URL without its trailing slashes, or null. */
+function cleanBase(value: string | null | undefined): string | null {
+  if (!value) return null;
+
+  const trimmed = value.trim();
+  if (!/^https?:\/\/[^/]/i.test(trimmed)) return null;
+
+  return trimmed.replace(/\/+$/, "");
+}
+
+/** The origin of a URL (`https://host:port`), or null when it is not one. */
+export function originOf(value: string | null | undefined): string | null {
+  const base = cleanBase(value);
+  if (!base) return null;
+
+  try {
+    return new URL(base).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which Speckle server to talk to, most specific first:
+ *
+ * 1. the document's own `serverUrl` — what a collaborator already chose;
+ * 2. the public origin the reactor publishes (`speckleServer.publicOrigin`),
+ *    which on a hosted tenant is its own Speckle server;
+ * 3. what this browser used last;
+ * 4. the local dev server.
+ *
+ * Unusable values are skipped rather than returned, so a blank field or a
+ * relative path never becomes the address.
+ */
+export function resolveSpeckleBase(sources: {
+  document?: string | null;
+  publicOrigin?: string | null;
+  remembered?: string | null;
+}): string {
+  return (
+    cleanBase(sources.document) ??
+    cleanBase(sources.publicOrigin) ??
+    cleanBase(sources.remembered) ??
+    DEFAULT_SPECKLE_BASE
+  );
+}
+
+/** What this browser used last, or null. */
+export function rememberedSpeckleBase(): string | null {
+  try {
+    return localStorage.getItem(BASE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 /** Remembered per browser; falls back to the local dev server. */
 export function getSpeckleBase(): string {
-  try {
-    return localStorage.getItem(BASE_STORAGE_KEY) ?? DEFAULT_SPECKLE_BASE;
-  } catch {
-    return DEFAULT_SPECKLE_BASE;
-  }
+  return resolveSpeckleBase({ remembered: rememberedSpeckleBase() });
 }
 
 export function setSpeckleBase(base: string): void {

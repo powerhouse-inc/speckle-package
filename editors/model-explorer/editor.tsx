@@ -344,6 +344,8 @@ export default function Editor() {
           >
             <Viewer
               serverUrl={serverUrl}
+              projectDocumentId={document.header.id}
+              visibility={state.visibility ?? null}
               projectId={state.projectId}
               modelId={activeModelId ?? ""}
               versionId={activeVersionId}

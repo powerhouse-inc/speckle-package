@@ -14,6 +14,7 @@ import {
   defaultModelId,
   defaultVersionId,
   massRows,
+  needsTokenPrompt,
   massSummary,
   modelOf,
   previousRevision,
@@ -699,5 +700,53 @@ describe("elementHistory", () => {
     expect(elementHistory(changes, "revit-9999", null)).toStrictEqual([]);
     expect(elementHistory(changes, null, null)).toStrictEqual([]);
     expect(elementHistory([], "revit-4711", null)).toStrictEqual([]);
+  });
+});
+
+describe("needsTokenPrompt", () => {
+  it("never asks when the sync document supplies the user's token", () => {
+    expect(
+      needsTokenPrompt({
+        source: "SYNC_DOCUMENT",
+        visibility: "PRIVATE",
+        failed: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("asks up front for a private project with no token", () => {
+    expect(
+      needsTokenPrompt({ source: null, visibility: "PRIVATE", failed: false }),
+    ).toBe(true);
+    expect(
+      needsTokenPrompt({ source: null, visibility: "workspace", failed: false }),
+    ).toBe(true);
+  });
+
+  it("lets public and unlisted projects load without asking", () => {
+    expect(
+      needsTokenPrompt({ source: null, visibility: "PUBLIC", failed: false }),
+    ).toBe(false);
+    expect(
+      needsTokenPrompt({ source: null, visibility: "UNLISTED", failed: false }),
+    ).toBe(false);
+    expect(
+      needsTokenPrompt({ source: null, visibility: null, failed: false }),
+    ).toBe(false);
+  });
+
+  it("asks once an unauthenticated load fails", () => {
+    expect(
+      needsTokenPrompt({ source: null, visibility: "PUBLIC", failed: true }),
+    ).toBe(true);
+  });
+
+  it("offers to replace a browser token only when it fails", () => {
+    expect(
+      needsTokenPrompt({ source: "BROWSER", visibility: "PRIVATE", failed: false }),
+    ).toBe(false);
+    expect(
+      needsTokenPrompt({ source: "BROWSER", visibility: "PRIVATE", failed: true }),
+    ).toBe(true);
   });
 });

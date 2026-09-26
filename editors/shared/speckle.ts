@@ -84,6 +84,90 @@ export function setSpeckleBase(base: string): void {
   }
 }
 
+/* ------------------------------------------------------------------- auth */
+
+/** The parts of a `speckle/sync` document the viewer's token lookup reads. */
+export interface SyncTokenSource {
+  state: {
+    global: {
+      serverUrl?: string | null;
+      targetProjectDocumentId?: string | null;
+    };
+    local: { accessToken?: string | null };
+  };
+}
+
+export type ViewerTokenSource = "SYNC_DOCUMENT" | "BROWSER" | null;
+
+/**
+ * The token the 3D viewer should load a mirrored project with.
+ *
+ * The user's own token already lives in the local scope of the sync document
+ * that writes into this mirror, so that is used first — preferring a sync
+ * document on the same server, since a token is only valid where it was
+ * issued. Failing that, one pasted into this browser for the server. Null
+ * means load unauthenticated, which is all a public project needs.
+ */
+export function resolveViewerToken(input: {
+  projectDocumentId: string;
+  serverUrl: string;
+  syncDocuments?: readonly SyncTokenSource[] | null;
+  stored?: string | null;
+}): { token: string | null; source: ViewerTokenSource } {
+  const origin = originOf(input.serverUrl);
+
+  const candidates = (input.syncDocuments ?? []).filter(
+    (doc) =>
+      doc.state.global.targetProjectDocumentId === input.projectDocumentId &&
+      Boolean(doc.state.local.accessToken?.trim()),
+  );
+
+  const sameServer = candidates.find(
+    (doc) =>
+      !doc.state.global.serverUrl ||
+      originOf(doc.state.global.serverUrl) === origin,
+  );
+
+  const fromSync = sameServer?.state.local.accessToken?.trim();
+  if (fromSync) return { token: fromSync, source: "SYNC_DOCUMENT" };
+
+  const stored = input.stored?.trim();
+  if (stored) return { token: stored, source: "BROWSER" };
+
+  return { token: null, source: null };
+}
+
+const TOKEN_STORAGE_PREFIX = "speckle-package:viewer-token:";
+
+function tokenKey(serverUrl: string): string | null {
+  const origin = originOf(serverUrl);
+  return origin ? `${TOKEN_STORAGE_PREFIX}${origin}` : null;
+}
+
+/** A token pasted into the viewer for this server, kept in this browser only. */
+export function storedViewerToken(serverUrl: string): string | null {
+  const key = tokenKey(serverUrl);
+  if (!key) return null;
+
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function storeViewerToken(serverUrl: string, token: string | null): void {
+  const key = tokenKey(serverUrl);
+  if (!key) return;
+
+  try {
+    if (token?.trim()) localStorage.setItem(key, token.trim());
+    else localStorage.removeItem(key);
+  } catch {
+    // Blocked storage: the token then lasts as long as the editor's state.
+  }
+}
+
 /* ------------------------------------------------------------------- links */
 
 /**

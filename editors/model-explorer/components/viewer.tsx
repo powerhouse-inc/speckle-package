@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { buildVersionUrl } from "../../shared/speckle.js";
 import { Button, EmptyState } from "../../shared/ui.js";
 import type { ChangeEntry } from "document-models/speckle-project";
-import type { IsolationMode } from "../logic.js";
+import { needsTokenPrompt, type IsolationMode } from "../logic.js";
 import { ElementPanel } from "./element-panel.js";
 import { CHANGE_COLOURS, LiveViewer, type Highlight } from "./live-viewer.js";
+import { TokenPrompt, useViewerToken } from "./viewer-token.js";
 
 const MODE_LABELS: Record<IsolationMode, string> = {
   ALL: "Whole model",
@@ -45,6 +46,8 @@ function Swatch({ colour, label }: { colour: string; label: string }) {
  */
 export function Viewer({
   serverUrl,
+  projectDocumentId,
+  visibility,
   projectId,
   modelId,
   versionId,
@@ -53,11 +56,14 @@ export function Viewer({
   mode,
   modeCounts,
   onModeChange,
-  token,
   changes,
   revisionCount,
 }: {
   serverUrl: string;
+  /** The mirror document, which sync documents name as their target. */
+  projectDocumentId: string;
+  /** Speckle's visibility for the project, as the last sync recorded it. */
+  visibility: string | null;
   projectId: string;
   modelId: string;
   versionId: string | null;
@@ -66,13 +72,14 @@ export function Viewer({
   mode: IsolationMode;
   modeCounts: Record<IsolationMode, number | null>;
   onModeChange: (next: IsolationMode) => void;
-  token?: string | null;
   changes: ChangeEntry[];
   revisionCount: number;
 }) {
   // Remounts the viewer, which is the honest way to recover from a bad load.
   const [nonce, setNonce] = useState(0);
   const [picked, setPicked] = useState<Record<string, unknown> | null>(null);
+  const [failed, setFailed] = useState(false);
+  const auth = useViewerToken(projectDocumentId, serverUrl);
 
   // A different revision is a different scene, so a stale selection would be
   // describing an element that is no longer on screen.
@@ -105,6 +112,11 @@ export function Viewer({
     versionId,
     focused,
   );
+  const askForToken = needsTokenPrompt({
+    source: auth.source,
+    visibility,
+    failed,
+  });
   const anyChange =
     highlight.added.length + highlight.modified.length + highlight.removed.length >
     0;
@@ -169,6 +181,14 @@ export function Viewer({
         </span>
       </div>
 
+      {askForToken && (
+        <TokenPrompt
+          serverUrl={serverUrl}
+          replacing={auth.source === "BROWSER"}
+          onSave={auth.save}
+        />
+      )}
+
       <LiveViewer
         key={`${referencedObject}#${nonce}`}
         serverUrl={serverUrl}
@@ -176,8 +196,9 @@ export function Viewer({
         referencedObject={referencedObject}
         highlight={highlight}
         mode={mode}
-        token={token}
+        token={auth.token}
         onPick={setPicked}
+        onStatus={(status) => setFailed(status === "FAILED")}
         overlay={
           picked && (
             <ElementPanel
@@ -194,6 +215,20 @@ export function Viewer({
         <p className="text-[11px] text-slate-400 dark:text-slate-500">
           Click an element in the model to see its properties and what every
           revision did to it.
+          {auth.source === "BROWSER" && (
+            <>
+              {" "}
+              Loaded with a token stored in this browser —{" "}
+              <button
+                type="button"
+                onClick={auth.forget}
+                className="underline hover:text-slate-600 dark:hover:text-slate-300"
+              >
+                forget it
+              </button>
+              .
+            </>
+          )}
         </p>
       )}
 

@@ -700,3 +700,32 @@ export function elementHistory(
       a.versionId.localeCompare(b.versionId),
   );
 }
+
+/* ------------------------------------------------------------ viewer auth */
+
+/** Speckle visibilities that anyone can read without a token. */
+const OPEN_VISIBILITIES = new Set(["PUBLIC", "UNLISTED"]);
+
+/**
+ * Whether the viewer should ask for a token.
+ *
+ * A token from the sync document is the user's own and is never second-guessed
+ * here. Without one, a project Speckle calls private asks straight away, and
+ * anything else asks only once a load has actually failed — so a public
+ * project, or a mirror synced before visibility was recorded, still just loads.
+ * A token pasted into this browser is offered for replacement when it fails.
+ */
+export function needsTokenPrompt(input: {
+  source: "SYNC_DOCUMENT" | "BROWSER" | null;
+  visibility: string | null;
+  failed: boolean;
+}): boolean {
+  if (input.source === "SYNC_DOCUMENT") return false;
+  if (input.source === "BROWSER") return input.failed;
+
+  const closed =
+    input.visibility !== null &&
+    !OPEN_VISIBILITIES.has(input.visibility.toUpperCase());
+
+  return input.failed || closed;
+}

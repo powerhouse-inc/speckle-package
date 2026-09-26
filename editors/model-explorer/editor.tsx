@@ -9,7 +9,7 @@ import {
   shortHash,
   toCsv,
 } from "../shared/format.js";
-import { DEFAULT_SPECKLE_BASE } from "../shared/speckle.js";
+import { useSpeckleBase } from "../shared/use-speckle-base.js";
 import {
   Button,
   Card,
@@ -154,7 +154,7 @@ export default function Editor() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [step]);
 
-  const serverUrl = state.serverUrl ?? DEFAULT_SPECKLE_BASE;
+  const serverUrl = useSpeckleBase(state.serverUrl);
 
   function exportMasses() {
     if (!revision) return;
@@ -344,6 +344,8 @@ export default function Editor() {
           >
             <Viewer
               serverUrl={serverUrl}
+              projectDocumentId={document.header.id}
+              visibility={state.visibility ?? null}
               projectId={state.projectId}
               modelId={activeModelId ?? ""}
               versionId={activeVersionId}

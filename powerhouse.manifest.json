@@ -62,6 +62,10 @@
     {
       "name": "Speckle Hotspots",
       "id": "speckle-hotspots"
+    },
+    {
+      "name": "Speckle Server",
+      "id": "speckle-server"
     }
   ],
   "config": []

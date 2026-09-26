@@ -100,6 +100,7 @@ export function LiveViewer({
   mode,
   token,
   onPick,
+  onStatus,
   overlay,
 }: {
   serverUrl: string;
@@ -110,6 +111,8 @@ export function LiveViewer({
   token?: string | null;
   /** The clicked element's raw Speckle object, or null when nothing is hit. */
   onPick?: (raw: Record<string, unknown> | null) => void;
+  /** Told whenever loading starts, finishes or fails — e.g. to ask for a token. */
+  onStatus?: (status: LoadState["status"]) => void;
   /** Rendered over the canvas, for a details panel. */
   overlay?: React.ReactNode;
 }) {
@@ -123,8 +126,12 @@ export function LiveViewer({
 
   // Colours are re-applied whenever the scene finishes loading, so the effect
   // below reads them from a ref rather than re-running on every change.
-  const latest = useRef({ highlight, mode, onPick });
-  latest.current = { highlight, mode, onPick };
+  const latest = useRef({ highlight, mode, onPick, onStatus });
+  latest.current = { highlight, mode, onPick, onStatus };
+
+  useEffect(() => {
+    latest.current.onStatus?.(load.status);
+  }, [load.status]);
 
   /* --------------------------------------------------- create and load */
   useEffect(() => {

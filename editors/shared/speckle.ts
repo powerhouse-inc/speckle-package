@@ -15,13 +15,65 @@ export interface SpeckleObjectLike {
 const BASE_STORAGE_KEY = "speckle-package:server-base";
 export const DEFAULT_SPECKLE_BASE = "http://127.0.0.1";
 
+/** An absolute http(s) URL without its trailing slashes, or null. */
+function cleanBase(value: string | null | undefined): string | null {
+  if (!value) return null;
+
+  const trimmed = value.trim();
+  if (!/^https?:\/\/[^/]/i.test(trimmed)) return null;
+
+  return trimmed.replace(/\/+$/, "");
+}
+
+/** The origin of a URL (`https://host:port`), or null when it is not one. */
+export function originOf(value: string | null | undefined): string | null {
+  const base = cleanBase(value);
+  if (!base) return null;
+
+  try {
+    return new URL(base).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which Speckle server to talk to, most specific first:
+ *
+ * 1. the document's own `serverUrl` — what a collaborator already chose;
+ * 2. the public origin the reactor publishes (`speckleServer.publicOrigin`),
+ *    which on a hosted tenant is its own Speckle server;
+ * 3. what this browser used last;
+ * 4. the local dev server.
+ *
+ * Unusable values are skipped rather than returned, so a blank field or a
+ * relative path never becomes the address.
+ */
+export function resolveSpeckleBase(sources: {
+  document?: string | null;
+  publicOrigin?: string | null;
+  remembered?: string | null;
+}): string {
+  return (
+    cleanBase(sources.document) ??
+    cleanBase(sources.publicOrigin) ??
+    cleanBase(sources.remembered) ??
+    DEFAULT_SPECKLE_BASE
+  );
+}
+
+/** What this browser used last, or null. */
+export function rememberedSpeckleBase(): string | null {
+  try {
+    return localStorage.getItem(BASE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 /** Remembered per browser; falls back to the local dev server. */
 export function getSpeckleBase(): string {
-  try {
-    return localStorage.getItem(BASE_STORAGE_KEY) ?? DEFAULT_SPECKLE_BASE;
-  } catch {
-    return DEFAULT_SPECKLE_BASE;
-  }
+  return resolveSpeckleBase({ remembered: rememberedSpeckleBase() });
 }
 
 export function setSpeckleBase(base: string): void {
@@ -29,6 +81,90 @@ export function setSpeckleBase(base: string): void {
     localStorage.setItem(BASE_STORAGE_KEY, base.replace(/\/+$/, ""));
   } catch {
     // Private browsing or blocked site data — the caller keeps its own state.
+  }
+}
+
+/* ------------------------------------------------------------------- auth */
+
+/** The parts of a `speckle/sync` document the viewer's token lookup reads. */
+export interface SyncTokenSource {
+  state: {
+    global: {
+      serverUrl?: string | null;
+      targetProjectDocumentId?: string | null;
+    };
+    local: { accessToken?: string | null };
+  };
+}
+
+export type ViewerTokenSource = "SYNC_DOCUMENT" | "BROWSER" | null;
+
+/**
+ * The token the 3D viewer should load a mirrored project with.
+ *
+ * The user's own token already lives in the local scope of the sync document
+ * that writes into this mirror, so that is used first — preferring a sync
+ * document on the same server, since a token is only valid where it was
+ * issued. Failing that, one pasted into this browser for the server. Null
+ * means load unauthenticated, which is all a public project needs.
+ */
+export function resolveViewerToken(input: {
+  projectDocumentId: string;
+  serverUrl: string;
+  syncDocuments?: readonly SyncTokenSource[] | null;
+  stored?: string | null;
+}): { token: string | null; source: ViewerTokenSource } {
+  const origin = originOf(input.serverUrl);
+
+  const candidates = (input.syncDocuments ?? []).filter(
+    (doc) =>
+      doc.state.global.targetProjectDocumentId === input.projectDocumentId &&
+      Boolean(doc.state.local.accessToken?.trim()),
+  );
+
+  const sameServer = candidates.find(
+    (doc) =>
+      !doc.state.global.serverUrl ||
+      originOf(doc.state.global.serverUrl) === origin,
+  );
+
+  const fromSync = sameServer?.state.local.accessToken?.trim();
+  if (fromSync) return { token: fromSync, source: "SYNC_DOCUMENT" };
+
+  const stored = input.stored?.trim();
+  if (stored) return { token: stored, source: "BROWSER" };
+
+  return { token: null, source: null };
+}
+
+const TOKEN_STORAGE_PREFIX = "speckle-package:viewer-token:";
+
+function tokenKey(serverUrl: string): string | null {
+  const origin = originOf(serverUrl);
+  return origin ? `${TOKEN_STORAGE_PREFIX}${origin}` : null;
+}
+
+/** A token pasted into the viewer for this server, kept in this browser only. */
+export function storedViewerToken(serverUrl: string): string | null {
+  const key = tokenKey(serverUrl);
+  if (!key) return null;
+
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function storeViewerToken(serverUrl: string, token: string | null): void {
+  const key = tokenKey(serverUrl);
+  if (!key) return;
+
+  try {
+    if (token?.trim()) localStorage.setItem(key, token.trim());
+    else localStorage.removeItem(key);
+  } catch {
+    // Blocked storage: the token then lasts as long as the editor's state.
   }
 }
 

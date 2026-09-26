@@ -6,9 +6,9 @@ import {
   actions,
   useSelectedSpeckleSyncDocument,
 } from "document-models/speckle-sync";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatDateTime, formatRelative } from "../shared/format.js";
-import { DEFAULT_SPECKLE_BASE } from "../shared/speckle.js";
+import { setSpeckleBase } from "../shared/speckle.js";
 import {
   Banner,
   Button,
@@ -21,6 +21,7 @@ import {
   TextInput,
   Toggle,
 } from "../shared/ui.js";
+import { useSpeckleBase } from "../shared/use-speckle-base.js";
 import { ProjectProbe } from "./components/project-probe.js";
 import { RunLog } from "./components/run-log.js";
 
@@ -31,24 +32,43 @@ export default function Editor() {
 
   const mirrors = useSpeckleProjectDocumentsInSelectedDrive();
 
+  // What a new document starts from: the reactor's own Speckle server where
+  // it publishes one, else what this browser used last. It may change once the
+  // reactor answers, so it is only ever a suggestion — see below.
+  const suggestedServerUrl = useSpeckleBase(null);
+
   const [serverUrl, setServerUrl] = useState(
-    state.serverUrl ?? DEFAULT_SPECKLE_BASE,
+    state.serverUrl ?? suggestedServerUrl,
   );
   const [projectId, setProjectId] = useState(state.projectId ?? "");
   const [projectName, setProjectName] = useState(state.projectName ?? "");
   const [token, setToken] = useState("");
   const [tokenLabel, setTokenLabel] = useState(local.tokenLabel ?? "");
 
+  // Read through a ref by the effect below, so a late suggestion is handled by
+  // its own effect and can never clobber an edit.
+  const previousSuggestion = useRef(suggestedServerUrl);
+
   // Follow the document when it changes underneath us — the processor writes to
   // it, and another collaborator may edit the connection.
   useEffect(() => {
-    setServerUrl(state.serverUrl ?? DEFAULT_SPECKLE_BASE);
+    setServerUrl(state.serverUrl ?? previousSuggestion.current);
     setProjectId(state.projectId ?? "");
     setProjectName(state.projectName ?? "");
   }, [state.serverUrl, state.projectId, state.projectName]);
 
+  // The suggestion arrives asynchronously. Follow it only while the field
+  // still shows the previous suggestion, so a URL the user typed survives.
+  useEffect(() => {
+    const previous = previousSuggestion.current;
+    previousSuggestion.current = suggestedServerUrl;
+
+    if (state.serverUrl) return;
+    setServerUrl((current) => (current === previous ? suggestedServerUrl : current));
+  }, [suggestedServerUrl, state.serverUrl]);
+
   const connectionDirty =
-    serverUrl !== (state.serverUrl ?? DEFAULT_SPECKLE_BASE) ||
+    serverUrl !== (state.serverUrl ?? suggestedServerUrl) ||
     projectId !== (state.projectId ?? "") ||
     projectName !== (state.projectName ?? "");
 
@@ -57,6 +77,7 @@ export default function Editor() {
   const lastRun = state.runs.at(0) ?? null;
 
   function saveConnection() {
+    setSpeckleBase(serverUrl);
     dispatch(
       actions.setServerConnection({
         serverUrl,
